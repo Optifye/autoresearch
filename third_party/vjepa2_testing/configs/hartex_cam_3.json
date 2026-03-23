@@ -1,0 +1,32 @@
+{
+    "run_name": "hartex_cam_3",
+    "training": {
+      "checkpoint_subdir": "hartex_cam_3",
+      "freeze_pooler": false,
+      "class_s3_paths": {
+        "continue": [
+          "s3://optiframe-models/98f3d39c-4b50-4e7b-8659-1c0b353315f8/30/clips/continue_with_roi/"
+        ],
+        "end": [
+          "s3://optiframe-models/98f3d39c-4b50-4e7b-8659-1c0b353315f8/30/clips/end_with_roi/"
+        ],
+        "no_action": [
+          "s3://optiframe-models/98f3d39c-4b50-4e7b-8659-1c0b353315f8/30/clips/no_action_with_roi/"
+        ],
+        "start": [
+          "s3://optiframe-models/98f3d39c-4b50-4e7b-8659-1c0b353315f8/30/clips/start_with_roi/"
+        ]
+      }
+    },
+    "inference": {
+      "roi": [0.2, 0, 0.5, 0.6],
+      "video_s3_path": "s3://optiframe-annotation-outputs/reviews/bb92a018-60a8-4d12-9106-f683ab13975b/2025/11/13/1300-1500_120m/original.mp4",
+      "start_time": 180.0,
+      "duration": 300.0,
+      "results_s3_path": "s3://optiframe-video-clips/jepa_results/hartex/hartex_cam_3/annotated.mp4"
+    },
+    "uploads": {
+      "config_s3_path": "s3://optiframe-video-clips/jepa_results/hartex/hartex_cam_3/config.json"
+    }
+  }
+  

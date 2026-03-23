@@ -1,0 +1,2 @@
+# Placeholder to keep this directory in git so Docker can bind-mount encoder weights
+# at `/workspace/third_party/vjepa2_testing/encoder_models` even when the parent mount is read-only.

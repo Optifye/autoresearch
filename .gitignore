@@ -11,6 +11,9 @@ wheels/
 worktrees/
 results/
 queue/
+.env
+.env.*
+!.env.example
 
 # Agent prompt files (generated per-session by launchers)
 CLAUDE.md

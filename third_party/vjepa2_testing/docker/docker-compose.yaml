@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  vjepa:
+    container_name: vjepa-dev
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    working_dir: /workspace
+    ipc: host
+    shm_size: 32g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+    volumes:
+      - ../:/workspace
+    stdin_open: true
+    tty: true
+    command: /bin/bash -c "sleep infinity"
+    restart: unless-stopped

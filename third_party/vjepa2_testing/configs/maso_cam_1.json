@@ -1,0 +1,32 @@
+{
+    "run_name": "maso_cam_1",
+    "training": {
+      "checkpoint_subdir": "maso_cam_1",
+      "freeze_pooler": false,
+      "class_s3_paths": {
+        "in_in": [
+          "s3://optiframe-models/4052839f-99a0-4a04-a992-a656dfd01331/22/clips/in-in_with_roi/"
+        ],
+        "in_out": [
+          "s3://optiframe-models/4052839f-99a0-4a04-a992-a656dfd01331/22/clips/in-out_with_roi/"
+        ],
+        "out_in": [
+          "s3://optiframe-models/4052839f-99a0-4a04-a992-a656dfd01331/22/clips/out-in_with_roi/"
+        ],
+        "out_out": [
+          "s3://optiframe-models/4052839f-99a0-4a04-a992-a656dfd01331/22/clips/out-out_with_roi/"
+        ]
+      }
+    },
+    "inference": {
+      "roi": [0.25, 0.45, 0.5, 0.5],
+      "video_s3_path": "s3://optiframe-annotation-outputs/reviews/1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d/2025/11/13/0800-1015_135m/original.mp4",
+      "start_time": 300.0,
+      "duration": 300.0,
+      "results_s3_path": "s3://optiframe-video-clips/jepa_results/maso/maso_cam_1/annotated.mp4"
+    },
+    "uploads": {
+      "config_s3_path": "s3://optiframe-video-clips/jepa_results/maso/maso_cam_1/config.json"
+    }
+  }
+  

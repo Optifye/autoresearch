@@ -1,0 +1,8 @@
+!encoder_models/
+encoder_models/*
+!encoder_models/.gitkeep
+__pycache__/
+.DS_Store
+data/
+artifacts/
+.env

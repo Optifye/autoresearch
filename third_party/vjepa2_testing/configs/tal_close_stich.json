@@ -1,0 +1,32 @@
+{
+    "run_name": "tal_close_stich",
+    "training": {
+      "checkpoint_subdir": "tal_close_stich",
+      "freeze_pooler": false,
+      "class_s3_paths": {
+        "continue": [
+          "s3://optiframe-models/d4d6712e-b8bd-49f5-b09e-2d1a4093cb62/22/clips/continue_with_roi/"
+        ],
+        "end": [
+          "s3://optiframe-models/d4d6712e-b8bd-49f5-b09e-2d1a4093cb62/22/clips/end_with_roi/"
+        ],
+        "no_action": [
+          "s3://optiframe-models/d4d6712e-b8bd-49f5-b09e-2d1a4093cb62/22/clips/no_action_with_roi/"
+        ],
+        "start": [
+          "s3://optiframe-models/d4d6712e-b8bd-49f5-b09e-2d1a4093cb62/22/clips/start_with_roi/"
+        ]
+      }
+    },
+    "inference": {
+      "roi": [0.3, 0.1, 0.5, 0.8],
+      "video_s3_path": "s3://optiframe-annotation-outputs/reviews/21ab0452-33e4-45fa-a175-b768f1e14d6c/2025/11/14/1245-1310_25m/original.mp4",
+      "start_time": 0.0,
+      "duration": 300.0,
+      "results_s3_path": "s3://optiframe-video-clips/jepa_results/tal/tal_close_stich/annotated.mp4"
+    },
+    "uploads": {
+      "config_s3_path": "s3://optiframe-video-clips/jepa_results/tal/tal_close_stich/config.json"
+    }
+  }
+  

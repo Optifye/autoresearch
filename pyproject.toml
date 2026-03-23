@@ -1,25 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
 [project]
-name = "autoresearch"
+name = "autoresearch-vjepa"
 version = "0.1.0"
-description = "Autonomous pretraining research swarm"
+description = "Standalone V-JEPA dense-temporal autoresearch harness"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.11"
 dependencies = [
-    "kernels>=0.11.7",
-    "matplotlib>=3.10.8",
-    "numpy>=2.2.6",
-    "pandas>=2.3.3",
-    "pyarrow>=21.0.0",
-    "requests>=2.32.0",
-    "rustbpe>=0.1.0",
-    "tiktoken>=0.11.0",
-    "torch==2.9.1",
+    "boto3==1.42.44",
+    "decord==0.6.0",
+    "einops==0.8.2",
+    "numpy==1.26.4",
+    "opencv-python-headless==4.11.0.86",
+    "pillow==10.4.0",
+    "supabase==2.17.0",
+    "timm==0.9.16",
+    "torch==2.7.0",
+    "torchvision==0.22.0",
 ]
 
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cu128" },
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autoresearch_vjepa"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

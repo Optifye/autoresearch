@@ -1,0 +1,40 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# Core deep learning stack
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# Project requirements
+tensorboard
+wandb
+iopath
+pyyaml
+numpy
+opencv-python-headless
+submitit
+braceexpand
+webdataset
+timm
+transformers
+peft
+decord
+pandas
+einops
+beartype
+psutil
+h5py
+fire
+python-box
+scikit-image
+ftfy
+jupyterlab
+ipykernel
+matplotlib
+seaborn
+boto3
+scikit-learn
+umap-learn
+black==24.4.2
+flake8==7.0.0
+isort==5.13.2
