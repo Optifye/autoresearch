@@ -1731,6 +1731,7 @@ def main() -> int:
             for name, trainer in tcn_trainers.items()
         )
     )
+    TCN_EVAL_EVERY = 10
     best_tcn_eval: Optional[EvalBundle] = None
     tcn_deadline = time.monotonic() + float(tcn_stage_seconds)
     tcn_round = 0
@@ -1740,20 +1741,22 @@ def main() -> int:
             trainer = tcn_trainers[name]
             trainer.train_epoch()
             peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
-        eval_bundle = _evaluate_trainers(tcn_trainers)
-        print(
-            f"[tcn] round={tcn_round} | primary={eval_bundle.primary_metric:.6f} "
-            f"mean_pair_f1={eval_bundle.mean_pair_f1:.6f} mean_count_mae={eval_bundle.mean_count_mae:.6f}"
-        )
-        if _should_replace_eval(best_tcn_eval, eval_bundle):
-            best_tcn_eval = eval_bundle
-            _save_best_bundle(
-                stage_name="tcn_best",
-                output_root=output_root,
-                tcn_trainers=tcn_trainers,
-                eval_bundle=eval_bundle,
+        past_deadline = time.monotonic() >= tcn_deadline
+        if tcn_round % TCN_EVAL_EVERY == 0 or past_deadline:
+            eval_bundle = _evaluate_trainers(tcn_trainers)
+            print(
+                f"[tcn] round={tcn_round} | primary={eval_bundle.primary_metric:.6f} "
+                f"mean_pair_f1={eval_bundle.mean_pair_f1:.6f} mean_count_mae={eval_bundle.mean_count_mae:.6f}"
             )
-        if time.monotonic() >= tcn_deadline:
+            if _should_replace_eval(best_tcn_eval, eval_bundle):
+                best_tcn_eval = eval_bundle
+                _save_best_bundle(
+                    stage_name="tcn_best",
+                    output_root=output_root,
+                    tcn_trainers=tcn_trainers,
+                    eval_bundle=eval_bundle,
+                )
+        if past_deadline:
             break
 
     if best_tcn_eval is None:
