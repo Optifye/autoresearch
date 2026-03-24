@@ -36,7 +36,7 @@ import random
 import sys
 import time
 import types
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
@@ -245,6 +245,34 @@ def _build_probe_with_vendor_classifier(
     if missing or unexpected:
         LOGGER.info("Probe load warnings missing=%s unexpected=%s", missing[:8], unexpected[:8])
     return classifier.pooler.to(device)
+
+
+def _torch_from_numpy_safe(
+    array: np.ndarray,
+    *,
+    device: torch.device,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    np_array = np.asarray(array)
+    if not np_array.flags.writeable:
+        np_array = np_array.copy()
+    tensor = torch.from_numpy(np_array).to(device=device)
+    if dtype is not None:
+        tensor = tensor.to(dtype=dtype)
+    return tensor
+
+
+def _numpy_writable(array: np.ndarray) -> np.ndarray:
+    np_array = np.asarray(array)
+    if not np_array.flags.writeable:
+        np_array = np_array.copy()
+    return np_array
+
+
+def _autocast_context(*, enabled: bool, dtype: torch.dtype):
+    if not enabled:
+        return nullcontext()
+    return torch.amp.autocast(device_type="cuda", dtype=dtype)
 
 
 @dataclass(frozen=True)
@@ -906,9 +934,7 @@ class TCNTrainer:
         p_max = torch.zeros(self.state.base_heads, device=self.device)
 
         for idx, stream in enumerate(self.state.streams):
-            x = torch.from_numpy(np.array(stream.embeddings, copy=not stream.embeddings.flags.writeable)).unsqueeze(0).to(
-                self.device
-            )
+            x = _torch_from_numpy_safe(stream.embeddings, device=self.device).unsqueeze(0)
             mask = torch.from_numpy(stream.mask_start_end).unsqueeze(0).to(self.device)
             mask_cycle = torch.from_numpy(stream.mask_cycle).unsqueeze(0).to(self.device)
             mask_class = torch.from_numpy(self.state.stream_class_masks[idx]).unsqueeze(0).to(self.device)
@@ -1416,26 +1442,24 @@ class ProbeTrainer:
                 device=self.device, dtype=torch.long
             )
             mask_class = torch.from_numpy(stream.mask_class[start:end]).to(device=self.device)
-            z0 = torch.from_numpy(stream.z0[start:end]).to(device=self.device)
+            z0 = _torch_from_numpy_safe(stream.z0[start:end], device=self.device)
 
             self.optimizer.zero_grad(set_to_none=True)
-            autocast_ctx = (
-                torch.cuda.amp.autocast(dtype=self.autocast_dtype) if self.use_autocast else prod_probe.contextlib.nullcontext()
-            )
+            autocast_ctx = _autocast_context(enabled=bool(self.use_autocast), dtype=self.autocast_dtype)
             with autocast_ctx:
                 if bool(use_frozen_tcn_context) and int(offset) > 0:
                     tokens_chunk = prod_probe._move_token_chunk_to_device(
-                        stream.tokens[start:end],
+                        _numpy_writable(stream.tokens[start:end]),
                         device=self.device,
                         use_autocast=bool(self.use_autocast),
                     )
-                    z_ctx_prefix = torch.from_numpy(stream.z0[ctx_start:start]).to(device=self.device)
+                    z_ctx_prefix = _torch_from_numpy_safe(stream.z0[ctx_start:start], device=self.device)
                     z = self.probe(tokens_chunk).squeeze(1)
                     z_ctx = torch.cat([z_ctx_prefix.to(dtype=z.dtype), z], dim=0)
                     logits_win = self.tcn(z_ctx.unsqueeze(0)).squeeze(0)
                 else:
                     tokens_win = prod_probe._move_token_chunk_to_device(
-                        stream.tokens[ctx_start:end],
+                        _numpy_writable(stream.tokens[ctx_start:end]),
                         device=self.device,
                         use_autocast=bool(self.use_autocast),
                     )
@@ -1573,13 +1597,11 @@ class ProbeTrainer:
         outputs: List[np.ndarray] = []
         chunk = int(max(1, DEFAULT_PROBE_EVAL_TOKEN_CHUNK))
         self.probe.eval()
-        autocast_ctx = (
-            torch.cuda.amp.autocast(dtype=self.autocast_dtype) if self.use_autocast else prod_probe.contextlib.nullcontext()
-        )
+        autocast_ctx = _autocast_context(enabled=bool(self.use_autocast), dtype=self.autocast_dtype)
         for start in range(0, int(tokens.shape[0]), chunk):
             end = min(int(tokens.shape[0]), int(start + chunk))
             token_chunk = prod_probe._move_token_chunk_to_device(
-                tokens[start:end],
+                _numpy_writable(tokens[start:end]),
                 device=self.device,
                 use_autocast=bool(self.use_autocast),
             )
