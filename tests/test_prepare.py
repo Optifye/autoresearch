@@ -92,6 +92,7 @@ def test_build_cache_and_memmap(tmp_path, monkeypatch) -> None:
         camera_include_regex=None,
         video_include_regex=None,
         path_include_regex=None,
+        split_policy="stable_hash",
         val_ratio=0.5,
         seed=42,
         force=False,
@@ -113,6 +114,48 @@ def test_build_cache_and_memmap(tmp_path, monkeypatch) -> None:
     tokens_mm = prepare.memmap_npz_member(Path(train_records[0].feature_path), "tokens")
     assert tokens_mm.shape == (6, 4, 3)
     assert float(tokens_mm[1, 0, 0]) == 12.0
+
+
+def test_build_cache_camera_balanced_split_handles_singleton_cameras(tmp_path) -> None:
+    cache_root = tmp_path / "cache"
+    cache_contract.configure_cache_paths(cache_root)
+    run_specs = [
+        ("v1", "cam_a"),
+        ("v2", "cam_a"),
+        ("v3", "cam_b"),
+        ("v4", "cam_b"),
+        ("v5", "cam_c"),
+    ]
+    for video_id, camera_id in run_specs:
+        _write_run(tmp_path, video_id=video_id, camera_id=camera_id, raw_path=f"s3://bucket/{video_id}.mp4")
+
+    summary = prepare.build_cache(
+        source_run_dirs=[str(tmp_path / f"run_{video_id}" / "dense_temporal") for video_id, _ in run_specs],
+        source_globs=[],
+        camera_include_regex=None,
+        video_include_regex=None,
+        path_include_regex=None,
+        split_policy="camera_balanced",
+        val_ratio=0.5,
+        seed=42,
+        force=False,
+    )
+
+    manifest = prepare.load_manifest(cache_root=cache_root)
+    train_records = prepare.load_split_records("train", cache_root=cache_root)
+    val_records = prepare.load_split_records("val", cache_root=cache_root)
+    val_eval_records = prepare.load_split_records("val_eval", cache_root=cache_root)
+
+    assert summary["split_policy"] == "camera_balanced"
+    assert manifest["split_policy"] == "camera_balanced"
+    assert manifest["camera_total_counts"] == {"cam_a": 2, "cam_b": 2, "cam_c": 1}
+    assert manifest["camera_val_counts"]["cam_a"] == 1
+    assert manifest["camera_val_counts"]["cam_b"] == 1
+    assert manifest["camera_val_counts"]["cam_c"] in {0, 1}
+    assert manifest["split_target_val_videos"] == 2.5
+    assert len({record.video_id for record in train_records}) == 2
+    assert len({record.video_id for record in val_records}) == 3
+    assert len(val_eval_records) == len(val_records)
 
 
 def test_pair_matching_and_metrics() -> None:

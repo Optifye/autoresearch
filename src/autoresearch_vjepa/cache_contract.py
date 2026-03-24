@@ -54,6 +54,7 @@ PAIR_TOLERANCE_MS = 1000
 VAL_RATIO = 0.5
 CACHE_VERSION = "onemed_dense_v1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SPLIT_POLICY = "camera_balanced"
 
 
 def _workspace_root_candidates() -> List[Path]:
@@ -199,6 +200,10 @@ def _stable_fraction(key: str, seed: int) -> float:
     return int(digest[:12], 16) / float(16**12)
 
 
+def _seeded_key(seed: int, value: str) -> str:
+    return hashlib.sha1(f"{seed}:{value}".encode("utf-8")).hexdigest()
+
+
 def _ensure_dirs(cache_root: Path) -> None:
     for path in (cache_root, MATERIALIZED_RUNS_DIR, RAW_FEATURES_DIR, POOLERS_DIR, SPLITS_DIR, INDEX_DIR):
         path.mkdir(parents=True, exist_ok=True)
@@ -266,6 +271,187 @@ def _clear_cache_outputs() -> None:
     for path in (RAW_FEATURES_DIR, POOLERS_DIR, SPLITS_DIR, INDEX_DIR):
         _remove_path(path)
     MANIFEST_PATH.unlink(missing_ok=True)
+
+
+def _normalize_split_policy(value: Optional[str]) -> str:
+    token = str(value or DEFAULT_SPLIT_POLICY).strip().lower().replace("-", "_")
+    if token not in {"stable_hash", "camera_balanced"}:
+        raise ValueError(
+            f"Unsupported split_policy={value!r}; expected one of ['camera_balanced', 'stable_hash']"
+        )
+    return token
+
+
+def _unique_records(records: Sequence[SegmentRecord]) -> List[SegmentRecord]:
+    out: Dict[str, SegmentRecord] = {}
+    for record in records:
+        out[str(record.segment_id)] = record
+    return [out[key] for key in sorted(out)]
+
+
+def _video_camera_index(records: Sequence[SegmentRecord]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for record in records:
+        current = out.get(record.video_id)
+        camera_id = str(record.camera_id)
+        if current is None:
+            out[record.video_id] = camera_id
+            continue
+        if current != camera_id:
+            raise ValueError(
+                f"Video {record.video_id} maps to multiple cameras: {current!r} vs {camera_id!r}"
+            )
+    return out
+
+
+def _build_stable_hash_video_split(
+    records: Sequence[SegmentRecord],
+    *,
+    val_ratio: float,
+    seed: int,
+) -> Tuple[List[str], List[str], Dict[str, int], Dict[str, int], float]:
+    all_records = _unique_records(records)
+    video_to_camera = _video_camera_index(all_records)
+    val_videos = sorted(
+        video_id for video_id in video_to_camera if _stable_fraction(video_id, seed) < float(val_ratio)
+    )
+    val_video_set = set(val_videos)
+    train_videos = sorted(video_id for video_id in video_to_camera if video_id not in val_video_set)
+    camera_total_counts: Dict[str, int] = {}
+    camera_val_counts: Dict[str, int] = {}
+    for video_id, camera_id in video_to_camera.items():
+        camera_total_counts[camera_id] = int(camera_total_counts.get(camera_id, 0) + 1)
+        if video_id in val_video_set:
+            camera_val_counts[camera_id] = int(camera_val_counts.get(camera_id, 0) + 1)
+        else:
+            camera_val_counts.setdefault(camera_id, 0)
+    return train_videos, val_videos, camera_val_counts, camera_total_counts, float(len(video_to_camera)) * float(
+        val_ratio
+    )
+
+
+def _build_camera_balanced_video_split(
+    records: Sequence[SegmentRecord],
+    *,
+    seed: int,
+) -> Tuple[List[str], List[str], Dict[str, int], Dict[str, int], float]:
+    all_records = _unique_records(records)
+    if not all_records:
+        raise RuntimeError("Cannot build split with zero records.")
+    video_to_camera = _video_camera_index(all_records)
+    videos_by_camera: Dict[str, List[str]] = {}
+    for video_id, camera_id in video_to_camera.items():
+        videos_by_camera.setdefault(camera_id, []).append(video_id)
+    ordered_cameras = sorted(videos_by_camera)
+    ordered_videos_by_camera = {
+        camera_id: sorted(videos_by_camera[camera_id], key=lambda item: _seeded_key(seed, item))
+        for camera_id in ordered_cameras
+    }
+
+    dp: Dict[int, Tuple[int, int, Tuple[int, ...]]] = {0: (0, 0, ())}
+    for camera_id in ordered_cameras:
+        video_count = len(ordered_videos_by_camera[camera_id])
+        next_dp: Dict[int, Tuple[int, int, Tuple[int, ...]]] = {}
+        for total_val, (gap_sum, gap_max, picks) in dp.items():
+            for val_pick_count in range(video_count + 1):
+                total_next = int(total_val + val_pick_count)
+                local_gap = abs((2 * int(val_pick_count)) - int(video_count))
+                candidate = (
+                    int(gap_sum + local_gap),
+                    int(max(gap_max, local_gap)),
+                    tuple((*picks, int(val_pick_count))),
+                )
+                current = next_dp.get(total_next)
+                if current is None or candidate[:2] < current[:2]:
+                    next_dp[total_next] = candidate
+        dp = next_dp
+
+    total_videos = len(video_to_camera)
+    target_val_videos = float(total_videos) / 2.0
+    best_total_val = min(
+        dp,
+        key=lambda total: (
+            abs((2 * int(total)) - int(total_videos)),
+            dp[total][0],
+            dp[total][1],
+            -int(total),
+        ),
+    )
+    chosen_pick_counts = dp[best_total_val][2]
+    val_videos: List[str] = []
+    camera_val_counts: Dict[str, int] = {}
+    camera_total_counts: Dict[str, int] = {}
+    for idx, camera_id in enumerate(ordered_cameras):
+        ordered_videos = ordered_videos_by_camera[camera_id]
+        pick_count = int(chosen_pick_counts[idx])
+        val_videos.extend(ordered_videos[:pick_count])
+        camera_val_counts[camera_id] = int(pick_count)
+        camera_total_counts[camera_id] = len(ordered_videos)
+    val_videos_sorted = sorted(set(val_videos))
+    train_videos = sorted(video_id for video_id in video_to_camera if video_id not in set(val_videos_sorted))
+    return train_videos, val_videos_sorted, camera_val_counts, camera_total_counts, target_val_videos
+
+
+def _materialize_split_records(
+    records: Sequence[SegmentRecord],
+    *,
+    split_policy: str,
+    val_ratio: float,
+    seed: int,
+) -> Dict[str, Any]:
+    all_records = _unique_records(records)
+    if not all_records:
+        raise RuntimeError("No segment records available to split.")
+
+    policy = _normalize_split_policy(split_policy)
+    if policy == "stable_hash":
+        train_videos, val_videos, camera_val_counts, camera_total_counts, target_val_videos = _build_stable_hash_video_split(
+            all_records,
+            val_ratio=val_ratio,
+            seed=seed,
+        )
+    else:
+        train_videos, val_videos, camera_val_counts, camera_total_counts, target_val_videos = _build_camera_balanced_video_split(
+            all_records,
+            seed=seed,
+        )
+
+    train_video_set = set(train_videos)
+    val_video_set = set(val_videos)
+    if train_video_set & val_video_set:
+        raise RuntimeError("Split generation produced overlapping train/val video ids.")
+
+    train_records = sorted(
+        (replace(record, split="train") for record in all_records if record.video_id in train_video_set),
+        key=lambda item: item.segment_id,
+    )
+    val_records = sorted(
+        (replace(record, split="val") for record in all_records if record.video_id in val_video_set),
+        key=lambda item: item.segment_id,
+    )
+    val_eval_records = sorted(
+        (
+            item
+            for item in val_records
+            if item.eval_start_idx is not None and item.eval_end_idx is not None and item.event_pairs_ms
+        ),
+        key=lambda item: item.segment_id,
+    )
+    if not train_records or not val_records or not val_eval_records:
+        raise RuntimeError(
+            f"Split policy {policy!r} produced an empty train/val/val_eval partition."
+        )
+    return {
+        "split_policy": policy,
+        "train_records": train_records,
+        "val_records": val_records,
+        "val_eval_records": val_eval_records,
+        "train_videos": train_videos,
+        "val_videos": val_videos,
+        "camera_val_counts": camera_val_counts,
+        "camera_total_counts": camera_total_counts,
+        "target_val_videos": float(target_val_videos),
+    }
 
 
 def _load_snapshot_payload(
@@ -708,6 +894,7 @@ def build_cache(
     camera_include_regex: Optional[str],
     video_include_regex: Optional[str],
     path_include_regex: Optional[str],
+    split_policy: str,
     val_ratio: float,
     seed: int,
     force: bool,
@@ -795,7 +982,6 @@ def build_cache(
                 if eval_idx is not None:
                     eval_start_idx, eval_end_idx = eval_idx
 
-            split = "val" if _stable_fraction(video_id, seed) < float(val_ratio) else "train"
             segment_tag = label_path.stem.split("__", 1)[-1]
             segment_id = f"{video_id}__{segment_tag}"
             if segment_id in seen_segments:
@@ -809,7 +995,7 @@ def build_cache(
             pooler_sha = str(feature_meta.get("pooler_sha") or "")
             record = SegmentRecord(
                 segment_id=segment_id,
-                split=split,
+                split="pending",
                 video_id=video_id,
                 camera_id=camera_id or str(feature_meta.get("camera_id") or ""),
                 source_run_dir=str(source_run_dir),
@@ -844,23 +1030,28 @@ def build_cache(
             target = POOLERS_DIR / f"{video_id}__{pooler_path.name}"
             _materialize_symlink(target, pooler_path)
 
-    train_records = sorted((item for item in segment_records if item.split == "train"), key=lambda item: item.segment_id)
-    val_records = sorted((item for item in segment_records if item.split == "val"), key=lambda item: item.segment_id)
-    val_eval_records = sorted(
-        (
-            item
-            for item in val_records
-            if item.eval_start_idx is not None and item.eval_end_idx is not None and item.event_pairs_ms
-        ),
-        key=lambda item: item.segment_id,
+    split_payload = _materialize_split_records(
+        segment_records,
+        split_policy=split_policy,
+        val_ratio=val_ratio,
+        seed=seed,
     )
+    train_records = list(split_payload["train_records"])
+    val_records = list(split_payload["val_records"])
+    val_eval_records = list(split_payload["val_eval_records"])
+    train_videos = list(split_payload["train_videos"])
+    val_videos = list(split_payload["val_videos"])
+    camera_val_counts = dict(split_payload["camera_val_counts"])
+    camera_total_counts = dict(split_payload["camera_total_counts"])
+    target_val_videos = float(split_payload["target_val_videos"])
+    resolved_split_policy = str(split_payload["split_policy"])
 
     SPLITS_DIR.joinpath("train_videos.json").write_text(
-        json.dumps(sorted({item.video_id for item in train_records}), indent=2),
+        json.dumps(train_videos, indent=2),
         encoding="utf-8",
     )
     SPLITS_DIR.joinpath("val_videos.json").write_text(
-        json.dumps(sorted({item.video_id for item in val_records}), indent=2),
+        json.dumps(val_videos, indent=2),
         encoding="utf-8",
     )
     with TRAIN_SEGMENTS_PATH.open("w", encoding="utf-8") as handle:
@@ -880,11 +1071,15 @@ def build_cache(
         "pair_tolerance_ms": PAIR_TOLERANCE_MS,
         "val_ratio": float(val_ratio),
         "seed": int(seed),
+        "split_policy": resolved_split_policy,
+        "split_target_val_videos": float(target_val_videos),
+        "camera_val_counts": camera_val_counts,
+        "camera_total_counts": camera_total_counts,
         "repo_root": str(REPO_ROOT),
         "workspace_roots": [str(path) for path in _workspace_root_candidates()],
         "source_run_dirs": [str(path) for path in dirs],
-        "train_videos": len({item.video_id for item in train_records}),
-        "val_videos": len({item.video_id for item in val_records}),
+        "train_videos": len(train_videos),
+        "val_videos": len(val_videos),
         "train_segments": len(train_records),
         "val_segments": len(val_records),
         "val_eval_segments": len(val_eval_records),
@@ -1102,6 +1297,12 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--camera-include-regex", default=None, help="Optional camera_id regex filter")
     parser.add_argument("--video-include-regex", default=None, help="Optional video_id regex filter")
     parser.add_argument("--path-include-regex", default=None, help="Optional raw path / feature path regex filter")
+    parser.add_argument(
+        "--split-policy",
+        default=DEFAULT_SPLIT_POLICY,
+        choices=("camera_balanced", "stable_hash"),
+        help="Video-level split policy written into the prepared cache.",
+    )
     parser.add_argument("--val-ratio", type=float, default=VAL_RATIO, help="Video-level validation ratio")
     parser.add_argument("--seed", type=int, default=42, help="Stable split seed")
     parser.add_argument("--force", action="store_true", help="Delete and rebuild the cache root")
@@ -1135,6 +1336,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         camera_include_regex=args.camera_include_regex,
         video_include_regex=args.video_include_regex,
         path_include_regex=args.path_include_regex,
+        split_policy=str(args.split_policy),
         val_ratio=float(args.val_ratio),
         seed=int(args.seed),
         force=bool(args.force),

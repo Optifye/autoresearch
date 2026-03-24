@@ -13,34 +13,6 @@ if str(SRC_ROOT) not in sys.path:
 import train
 
 
-def _record(*, video_id: str, camera_id: str, segment_id: str) -> train.SegmentRecord:
-    return train.SegmentRecord(
-        segment_id=segment_id,
-        split="train",
-        video_id=video_id,
-        camera_id=camera_id,
-        source_run_dir="/tmp/source",
-        feature_path="/tmp/features.npz",
-        label_path="/tmp/labels.json",
-        pooler_checkpoint="/tmp/pooler.pt",
-        pooler_sha="sha",
-        embedding_dim=1024,
-        token_dim=1024,
-        tokens_per_window=64,
-        num_total_windows=128,
-        fps=25.0,
-        supervised_start_ms=0,
-        supervised_end_ms=1000,
-        supervised_start_idx=0,
-        supervised_end_idx=10,
-        eval_start_ms=0,
-        eval_end_ms=1000,
-        eval_start_idx=0,
-        eval_end_idx=10,
-        event_pairs_ms=((0, 500),),
-    )
-
-
 def test_stage_budget_split_scales_total_budget(monkeypatch) -> None:
     monkeypatch.delenv("AUTORESEARCH_TCN_STAGE_SECONDS", raising=False)
     monkeypatch.delenv("AUTORESEARCH_PROBE_STAGE_SECONDS", raising=False)
@@ -52,27 +24,6 @@ def test_stage_budget_split_scales_total_budget(monkeypatch) -> None:
     tcn_scaled, probe_scaled = train.resolve_stage_budget_seconds(10.0)
     assert tcn_scaled == 5.0
     assert probe_scaled == 5.0
-
-
-def test_camera_balanced_split_handles_singleton_cameras() -> None:
-    records = [
-        _record(video_id="v1", camera_id="cam_a", segment_id="v1__seg000"),
-        _record(video_id="v2", camera_id="cam_a", segment_id="v2__seg000"),
-        _record(video_id="v3", camera_id="cam_b", segment_id="v3__seg000"),
-        _record(video_id="v4", camera_id="cam_b", segment_id="v4__seg000"),
-        _record(video_id="v5", camera_id="cam_c", segment_id="v5__seg000"),
-    ]
-
-    split = train.build_camera_balanced_split(records, seed=42)
-
-    assert len(split.train_videos) + len(split.val_videos) == 5
-    assert len(split.val_videos) == 3
-    assert split.camera_total_counts == {"cam_a": 2, "cam_b": 2, "cam_c": 1}
-    assert split.camera_val_counts["cam_a"] == 1
-    assert split.camera_val_counts["cam_b"] == 1
-    assert split.camera_val_counts["cam_c"] in {0, 1}
-    assert len(split.val_eval_records) == len(split.val_records)
-
 
 def test_bundle_metrics_uses_worst_space_as_primary() -> None:
     bundle = train._bundle_metrics(

@@ -17,15 +17,14 @@ the fixed 10-minute autoresearch budget:
 - 5 minutes total for TCN rounds
 - 5 minutes total for probe rounds
 
-Validation is rebuilt inside this file at video granularity with the nearest
-feasible 50/50 camera-balanced split. The prepared cache remains fixed; this
-trainer simply ignores the cache's original split indices.
+The prepared cache owns the 50/50 camera/video-balanced split. This trainer
+consumes the cached split files and does not rebuild train/validation partitions
+at runtime.
 """
 
 from __future__ import annotations
 
 import copy
-import hashlib
 import importlib.util
 import importlib.machinery
 import io
@@ -51,8 +50,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from autoresearch_vjepa.cache_contract import (
-    CACHE_DIR,
     CACHE_VERSION,
+    DEFAULT_SPLIT_POLICY,
     TIME_BUDGET,
     TOTAL_TIMEOUT_SECONDS,
     EventPair,
@@ -277,6 +276,7 @@ def _autocast_context(*, enabled: bool, dtype: torch.dtype):
 
 @dataclass(frozen=True)
 class SplitPlan:
+    split_policy: str
     train_records: Tuple[SegmentRecord, ...]
     val_records: Tuple[SegmentRecord, ...]
     val_eval_records: Tuple[SegmentRecord, ...]
@@ -309,15 +309,6 @@ class EvalBundle:
     mean_count_mae: float
     mean_start_mae_ms: float
     mean_end_mae_ms: float
-
-
-def _stable_hash_int(key: str) -> int:
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
-    return int(digest[:16], 16)
-
-
-def _seeded_key(seed: int, value: str) -> str:
-    return hashlib.sha1(f"{seed}:{value}".encode("utf-8")).hexdigest()
 
 
 def resolve_time_budget_seconds() -> float:
@@ -491,7 +482,11 @@ def _ensure_cache(space_name: str, source_run_dir: Path, cache_root_base: Path) 
         try:
             manifest = load_manifest(cache_root=cache_root)
             sources = {str(Path(item).resolve()) for item in manifest.get("source_run_dirs", [])}
-            need_build = str(source_run_dir.resolve()) not in sources
+            manifest_policy = str(manifest.get("split_policy") or "").strip()
+            need_build = (
+                str(source_run_dir.resolve()) not in sources
+                or manifest_policy != DEFAULT_SPLIT_POLICY
+            )
         except Exception:
             need_build = True
     if need_build:
@@ -503,18 +498,12 @@ def _ensure_cache(space_name: str, source_run_dir: Path, cache_root_base: Path) 
             camera_include_regex=None,
             video_include_regex=None,
             path_include_regex=None,
+            split_policy=DEFAULT_SPLIT_POLICY,
             val_ratio=0.5,
             seed=SEED,
             force=True,
         )
     return cache_root
-
-
-def _unique_records(records: Sequence[SegmentRecord]) -> List[SegmentRecord]:
-    out: Dict[str, SegmentRecord] = {}
-    for record in records:
-        out[str(record.segment_id)] = record
-    return [out[key] for key in sorted(out)]
 
 
 def _video_camera_index(records: Sequence[SegmentRecord]) -> Dict[str, str]:
@@ -532,87 +521,47 @@ def _video_camera_index(records: Sequence[SegmentRecord]) -> Dict[str, str]:
     return out
 
 
-def build_camera_balanced_split(records: Sequence[SegmentRecord], *, seed: int) -> SplitPlan:
-    all_records = _unique_records(records)
-    if not all_records:
-        raise RuntimeError("Cannot build split with zero records.")
-    video_to_camera = _video_camera_index(all_records)
-    videos_by_camera: Dict[str, List[str]] = {}
-    for video_id, camera_id in video_to_camera.items():
-        videos_by_camera.setdefault(camera_id, []).append(video_id)
-    ordered_cameras = sorted(videos_by_camera)
-    ordered_videos_by_camera = {
-        camera_id: sorted(videos_by_camera[camera_id], key=lambda item: _seeded_key(seed, item))
-        for camera_id in ordered_cameras
-    }
-
-    dp: Dict[int, Tuple[int, int, Tuple[int, ...]]] = {0: (0, 0, ())}
-    for camera_id in ordered_cameras:
-        video_count = len(ordered_videos_by_camera[camera_id])
-        next_dp: Dict[int, Tuple[int, int, Tuple[int, ...]]] = {}
-        for total_val, (gap_sum, gap_max, picks) in dp.items():
-            for val_pick_count in range(video_count + 1):
-                total_next = int(total_val + val_pick_count)
-                local_gap = abs((2 * int(val_pick_count)) - int(video_count))
-                candidate = (
-                    int(gap_sum + local_gap),
-                    int(max(gap_max, local_gap)),
-                    tuple((*picks, int(val_pick_count))),
-                )
-                current = next_dp.get(total_next)
-                if current is None or candidate[:2] < current[:2]:
-                    next_dp[total_next] = candidate
-        dp = next_dp
-
-    total_videos = len(video_to_camera)
-    target_val_videos = float(total_videos) / 2.0
-    best_total_val = min(
-        dp,
-        key=lambda total: (
-            abs((2 * int(total)) - int(total_videos)),
-            dp[total][0],
-            dp[total][1],
-            -int(total),
-        ),
-    )
-    chosen_pick_counts = dp[best_total_val][2]
-    val_videos: List[str] = []
-    camera_val_counts: Dict[str, int] = {}
-    camera_total_counts: Dict[str, int] = {}
-    for idx, camera_id in enumerate(ordered_cameras):
-        ordered_videos = ordered_videos_by_camera[camera_id]
-        pick_count = int(chosen_pick_counts[idx])
-        val_videos.extend(ordered_videos[:pick_count])
-        camera_val_counts[camera_id] = int(pick_count)
-        camera_total_counts[camera_id] = len(ordered_videos)
-    val_video_set = set(val_videos)
-    train_videos = sorted(video_id for video_id in video_to_camera if video_id not in val_video_set)
-    val_videos_sorted = sorted(val_video_set)
-    train_records = tuple(record for record in all_records if record.video_id in set(train_videos))
-    val_records = tuple(record for record in all_records if record.video_id in val_video_set)
-    val_eval_records = tuple(
-        record
-        for record in val_records
-        if record.eval_start_idx is not None and record.eval_end_idx is not None and record.event_pairs_ms
-    )
+def _load_cached_split_plan(cache_root: Path) -> SplitPlan:
+    manifest = load_manifest(cache_root=cache_root)
+    train_records = tuple(load_split_records("train", cache_root=cache_root))
+    val_records = tuple(load_split_records("val", cache_root=cache_root))
+    val_eval_records = tuple(load_split_records("val_eval", cache_root=cache_root))
     if not train_records or not val_records or not val_eval_records:
-        raise RuntimeError("Custom camera-balanced split produced an empty train/val/val_eval partition.")
+        raise RuntimeError(f"Cache {cache_root} has an empty train/val/val_eval split.")
+
+    train_videos = tuple(sorted({record.video_id for record in train_records}))
+    val_videos = tuple(sorted({record.video_id for record in val_records}))
+    video_to_camera = _video_camera_index(tuple(train_records) + tuple(val_records))
+    camera_total_counts: Dict[str, int] = {}
+    for camera_id in video_to_camera.values():
+        camera_total_counts[camera_id] = int(camera_total_counts.get(camera_id, 0) + 1)
+    camera_val_counts: Dict[str, int] = {}
+    for video_id in val_videos:
+        camera_id = video_to_camera[video_id]
+        camera_val_counts[camera_id] = int(camera_val_counts.get(camera_id, 0) + 1)
+    for camera_id in camera_total_counts:
+        camera_val_counts.setdefault(camera_id, 0)
+
     return SplitPlan(
-        train_records=tuple(sorted(train_records, key=lambda item: item.segment_id)),
-        val_records=tuple(sorted(val_records, key=lambda item: item.segment_id)),
-        val_eval_records=tuple(sorted(val_eval_records, key=lambda item: item.segment_id)),
-        train_videos=tuple(train_videos),
-        val_videos=tuple(val_videos_sorted),
-        camera_val_counts=camera_val_counts,
-        camera_total_counts=camera_total_counts,
-        target_val_videos=target_val_videos,
-    )
-
-
-def _load_all_cache_records(cache_root: Path) -> List[SegmentRecord]:
-    return _unique_records(
-        list(load_split_records("train", cache_root=cache_root))
-        + list(load_split_records("val", cache_root=cache_root))
+        split_policy=str(manifest.get("split_policy") or DEFAULT_SPLIT_POLICY),
+        train_records=train_records,
+        val_records=val_records,
+        val_eval_records=val_eval_records,
+        train_videos=train_videos,
+        val_videos=val_videos,
+        camera_val_counts={
+            str(key): int(value)
+            for key, value in (manifest.get("camera_val_counts") or camera_val_counts).items()
+        },
+        camera_total_counts={
+            str(key): int(value)
+            for key, value in (manifest.get("camera_total_counts") or camera_total_counts).items()
+        },
+        target_val_videos=(
+            float(manifest["split_target_val_videos"])
+            if manifest.get("split_target_val_videos") is not None
+            else float(len(train_videos) + len(val_videos)) / 2.0
+        ),
     )
 
 
@@ -620,7 +569,7 @@ def _build_space_spec(space_name: str, output_root: Path) -> SpaceSpec:
     source_run_dir = _resolve_source_run_dir(space_name)
     cfg = _load_space_cfg(source_run_dir)
     cache_root = _ensure_cache(space_name, source_run_dir, _resolve_cache_root(space_name))
-    split_plan = build_camera_balanced_split(_load_all_cache_records(cache_root), seed=SEED)
+    split_plan = _load_cached_split_plan(cache_root)
     output_dir = output_root / SPACE_KEY_BY_NAME[space_name]
     output_dir.mkdir(parents=True, exist_ok=True)
     return SpaceSpec(
@@ -1735,7 +1684,8 @@ def _print_split_summary(space: SpaceSpec) -> None:
         for camera_id in sorted(space.split_plan.camera_total_counts)
     ]
     print(
-        f"[split] {space.name} | train_videos={len(space.split_plan.train_videos)} "
+        f"[split] {space.name} | policy={space.split_plan.split_policy} "
+        f"train_videos={len(space.split_plan.train_videos)} "
         f"val_videos={len(space.split_plan.val_videos)} target_val_videos={space.split_plan.target_val_videos:.1f} "
         f"singleton_cameras={singleton_cameras}"
     )
@@ -1874,6 +1824,7 @@ def main() -> int:
             name: {
                 "source_run_dir": str(spec.source_run_dir),
                 "cache_root": str(spec.cache_root),
+                "split_policy": str(spec.split_plan.split_policy),
                 "train_segments": len(spec.split_plan.train_records),
                 "val_segments": len(spec.split_plan.val_records),
                 "val_eval_segments": len(spec.split_plan.val_eval_records),
