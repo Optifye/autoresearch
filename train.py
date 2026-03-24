@@ -132,7 +132,7 @@ DEFAULT_OUTPUT_ROOT = Path("/tmp/autoresearch_minda_runs")
 
 DEFAULT_TCN_STAGE_SECONDS = 300.0
 DEFAULT_PROBE_STAGE_SECONDS = 300.0
-DEFAULT_PROBE_EVAL_TOKEN_CHUNK = 8
+DEFAULT_PROBE_EVAL_TOKEN_CHUNK = 32
 
 
 def _resolve_vjepa_vendor_root() -> Path:
