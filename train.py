@@ -227,6 +227,16 @@ class DenseTemporalModel(nn.Module):
                 dilations=tuple(int(item) for item in DILATIONS),
             )
         )
+        self.gru = nn.GRU(
+            input_size=int(input_dim),
+            hidden_size=int(HIDDEN_DIM),
+            num_layers=2,
+            batch_first=True,
+            dropout=float(DROPOUT),
+            bidirectional=True,
+        )
+        self.gru_head = nn.Linear(int(HIDDEN_DIM) * 2, int(output_dim))
+        self.gate = nn.Linear(int(output_dim) * 2, int(output_dim))
 
     def _pool_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         if self.pooler is None:
@@ -243,7 +253,11 @@ class DenseTemporalModel(nn.Module):
 
     def forward(self, batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         features = self.encode(batch)
-        logits = self.tcn(features)
+        tcn_logits = self.tcn(features)
+        gru_out, _ = self.gru(features)
+        gru_logits = self.gru_head(gru_out)
+        combined = torch.cat([tcn_logits, gru_logits], dim=-1)
+        logits = self.gate(combined)
         return logits, features
 
 
