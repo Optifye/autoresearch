@@ -1741,7 +1741,8 @@ def main() -> int:
             trainer = tcn_trainers[name]
             trainer.train_epoch()
             peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
-        past_deadline = time.monotonic() >= tcn_deadline
+        TCN_MAX_ROUNDS = 80
+        past_deadline = time.monotonic() >= tcn_deadline or tcn_round >= TCN_MAX_ROUNDS
         if tcn_round % TCN_EVAL_EVERY == 0 or past_deadline:
             eval_bundle = _evaluate_trainers(tcn_trainers)
             print(
@@ -1781,7 +1782,10 @@ def main() -> int:
         )
     )
     best_probe_eval: Optional[EvalBundle] = None
-    probe_deadline = time.monotonic() + float(probe_stage_seconds)
+    tcn_elapsed = time.time() - start_time
+    remaining_budget = max(60.0, float(total_budget_seconds) - tcn_elapsed)
+    probe_deadline = time.monotonic() + remaining_budget
+    print(f"[probe] budget={remaining_budget:.1f}s (tcn used {tcn_elapsed:.1f}s)")
     probe_round = 0
     while True:
         probe_round += 1
