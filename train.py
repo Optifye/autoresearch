@@ -1,51 +1,45 @@
 """
-Dual-space autoresearch dense-temporal trainer for the Minda TCN spaces.
+Replay-faithful autoresearch trainer for the Minda subassembly cyclic dataset.
 
-This run keeps the production dense-temporal logic intact as much as possible:
+This branch intentionally focuses on one dataset and one recipe:
 
-- one boundary TCN per space
-- one probe phase-1 finetune per space
-- production target preparation, losses, checkpoint formats, and evaluation
+- latest `minda-subassembly-tcn` dense-temporal source run
+- exact mar13 stage-0 bidirectional TCN recipe
+- exact historical probe phase-1 recipe
+- deterministic 60/40 camera-stratified validation split
+- fixed 5-minute stage-0 budget + fixed 5-minute probe budget
 
-The only intentional model change versus production is:
-
-- `tcn_bidirectional = False`
-
-The two spaces train as independent models, but they advance in lockstep inside
-the fixed 10-minute autoresearch budget:
-
-- 5 minutes total for TCN rounds
-- 5 minutes total for probe rounds
-
-The prepared cache owns the 50/50 camera/video-balanced split. This trainer
-consumes the cached split files and does not rebuild train/validation partitions
-at runtime.
+The goal here is not to redesign the dense-temporal stack. It is to make the
+validated recipe easy to rerun inside a single standalone `train.py`.
 """
 
 from __future__ import annotations
 
-import copy
-import importlib.util
+import hashlib
 import importlib.machinery
-import io
+import importlib.util
 import json
 import logging
+import math
 import os
 import random
 import sys
 import time
 import types
 from contextlib import contextmanager, nullcontext
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 ROOT = Path(__file__).resolve().parent
 SRC_ROOT = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -54,6 +48,7 @@ from autoresearch_vjepa.cache_contract import (
     DEFAULT_SPLIT_POLICY,
     TIME_BUDGET,
     TOTAL_TIMEOUT_SECONDS,
+    VAL_RATIO,
     EventPair,
     SegmentRecord,
     build_cache,
@@ -64,7 +59,6 @@ from autoresearch_vjepa.cache_contract import (
     load_segment_arrays,
     load_split_records,
 )
-from autoresearch_vjepa.contracts import DenseTemporalRunConfig, parse_dense_temporal_snapshot
 
 
 def _resolve_workspace_root() -> Path:
@@ -102,37 +96,1175 @@ for candidate in (
     if candidate_str not in sys.path:
         sys.path.insert(0, candidate_str)
 
+from src.training.dense_temporal.boundary_labels import CycleInterval, build_boundary_targets, map_cycles_to_indices
+from src.training.dense_temporal.losses import focal_bce_with_logits, masked_mean
+from src.training.dense_temporal.models.boundary_tcn import BoundaryTCN, BoundaryTCNConfig
 from src.training.dense_temporal import probe_phase1 as prod_probe
 from src.training.dense_temporal import tcn_train as prod_tcn
 
-LOGGER = logging.getLogger("autoresearch.minda.train")
+LOGGER = logging.getLogger("autoresearch.subassembly.train")
 
-MODEL_FAMILY = "minda_dual_prod_tcn_probe_phase1"
+MODEL_FAMILY = "minda_subassembly_mar13_stage0_historical_probe"
+TASK_MODE = "boundary_pairs_single_space"
 SEED = 42
 
-SPACE_ORDER = ("minda-button-tcn", "minda-subassembly-tcn")
-SPACE_KEY_BY_NAME = {
-    "minda-button-tcn": "button",
-    "minda-subassembly-tcn": "subassembly",
-}
-
-DEFAULT_BUTTON_SOURCE_RUN_DIR = Path(
-    "/tmp/embedding_runs/a8c6f52b-cb31-4942-b1df-5b30f3ed5b81-hybrid-rnd-20260324T124730Z/dense_temporal"
-)
-DEFAULT_SUBASSEMBLY_SOURCE_RUN_DIR = Path(
-    "/tmp/embedding_runs/78768e0e-e985-4eca-9f26-8757b7f7209a/dense_temporal"
-)
-DEFAULT_SUBASSEMBLY_MATERIALIZED_DIR = Path(
-    "/tmp/autoresearch_minda_sources/minda-subassembly-tcn/dense_temporal"
-)
-
-DEFAULT_BUTTON_CACHE_DIR = Path("/tmp/autoresearch-minda-button-cache")
-DEFAULT_SUBASSEMBLY_CACHE_DIR = Path("/tmp/autoresearch-minda-subassembly-cache")
-DEFAULT_OUTPUT_ROOT = Path("/tmp/autoresearch_minda_runs")
+SPACE_NAME = "minda-subassembly-tcn"
+DEFAULT_SOURCE_RUN_DIR = Path("/tmp/embedding_runs/92c8fdb4-c0f6-4503-b2cc-ab340f79f8f6/dense_temporal")
+LEGACY_SOURCE_RUN_DIR = Path("/tmp/autoresearch_minda_sources/minda-subassembly-tcn/dense_temporal")
+DEFAULT_CACHE_DIR = Path("/tmp/autoresearch-minda-subassembly-cache")
+DEFAULT_OUTPUT_ROOT = Path("/tmp/autoresearch_minda_subassembly_replay_runs")
 
 DEFAULT_TCN_STAGE_SECONDS = 300.0
 DEFAULT_PROBE_STAGE_SECONDS = 300.0
-DEFAULT_PROBE_EVAL_TOKEN_CHUNK = 32
+EVAL_TOKEN_CHUNK = 64
+PHASE1_MIN_CHUNK = 8
+
+
+@dataclass(frozen=True)
+class SplitPlan:
+    split_policy: str
+    train_records: Tuple[SegmentRecord, ...]
+    val_records: Tuple[SegmentRecord, ...]
+    val_eval_records: Tuple[SegmentRecord, ...]
+    train_videos: Tuple[str, ...]
+    val_videos: Tuple[str, ...]
+    camera_val_counts: Dict[str, int]
+    camera_total_counts: Dict[str, int]
+    target_val_videos: float
+
+
+@dataclass(frozen=True)
+class SpaceSpec:
+    name: str
+    source_run_dir: Path
+    cache_root: Path
+    output_dir: Path
+    split_plan: SplitPlan
+    pooler_path: Path
+    encoder_model: str
+    encoder_checkpoint: Path
+
+
+@dataclass(frozen=True)
+class Stage0Config:
+    seed: int = 42
+    epochs: int = 200
+    val_every_epochs: int = 5
+    batch_size: int = 32
+    chunk_len: int = 256
+    grad_accum_steps: int = 1
+    lr: float = 1e-3
+    weight_decay: float = 1e-4
+    warmup_ratio: float = 0.05
+    final_lr_frac: float = 0.2
+    hidden_dim: int = 128
+    kernel_size: int = 5
+    dropout: float = 0.1
+    use_layernorm: bool = True
+    dilations: Tuple[int, ...] = (1, 2, 4, 8, 16, 32)
+    focal_gamma: float = 2.0
+    pos_weight_start_end: float = 10.0
+    pos_weight_cycle: float = 1.0
+    cycle_loss_weight: float = 0.5
+    aux_loss_weight: float = 0.1
+    transition_consistency_weight: float = 0.15
+    neg_margin: float = 0.2
+    ignore_radius: int = 1
+    smooth_sigma: float = 0.0
+    ema_enabled: bool = True
+    ema_decay: float = 0.9998
+    ema_start_ratio: float = 0.15
+    boundary_index_mode: str = "ordered_nearest"
+    model_family: str = MODEL_FAMILY
+    seq_model: str = "tcn"
+    combine_start_end: bool = False
+    grad_clip_norm: float = 1.0
+    task_specific_heads: bool = True
+    bidirectional: bool = True
+    log_every_steps: int = 20
+
+
+@dataclass(frozen=True)
+class SupervisedSegment:
+    record: SegmentRecord
+    global_start_idx: int
+    global_end_idx: int
+    timestamps_ms: np.ndarray
+    y_start: np.ndarray
+    y_end: np.ndarray
+    y_cycle: np.ndarray
+    mask_start_end: np.ndarray
+    pooled_z0: np.ndarray
+    gt_pairs: Tuple[EventPair, ...]
+
+    @property
+    def length(self) -> int:
+        return int(self.timestamps_ms.shape[0])
+
+
+@dataclass(frozen=True)
+class Stage0Result:
+    checkpoint_path: Path
+    config_snapshot_path: Path
+    metrics_path: Path
+    history_path: Path
+    metrics: Dict[str, float]
+    best_epoch: int
+    best_source: str
+    steps_per_epoch: int
+    total_steps: int
+    elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class Phase1Result:
+    probe_checkpoint: Path
+    tcn_checkpoint: Path
+    metrics_path: Path
+    config_snapshot_path: Path
+    history_path: Path
+    metrics: Dict[str, float]
+    best_epoch: int
+    best_loss: float
+    effective_chunk_len: int
+    elapsed_seconds: float
+
+
+class Stage0BoundaryModel(nn.Module):
+    def __init__(self, *, input_dim: int, cfg: Stage0Config) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.tcn = BoundaryTCN(
+            BoundaryTCNConfig(
+                input_dim=int(input_dim),
+                hidden_dim=int(cfg.hidden_dim),
+                out_dim=3,
+                kernel_size=int(cfg.kernel_size),
+                dropout=float(cfg.dropout),
+                use_layernorm=bool(cfg.use_layernorm),
+                dilations=tuple(int(item) for item in cfg.dilations),
+                bidirectional=bool(cfg.bidirectional),
+                task_specific_heads=bool(cfg.task_specific_heads),
+                base_heads=3,
+            )
+        )
+
+    def forward(self, batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        logits = self.tcn(batch)
+        return logits, batch
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Unsupported JSON type: {type(value)!r}")
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
+
+
+def _set_seed(seed: int) -> None:
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+
+
+def _resolve_output_root() -> Path:
+    override = os.getenv("AUTORESEARCH_OUTPUT_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return DEFAULT_OUTPUT_ROOT.resolve()
+
+
+def _resolve_source_run_dir(cache_root: Optional[Path] = None) -> Path:
+    candidates: List[Path] = []
+    override = os.getenv("AUTORESEARCH_MINDA_SUBASSEMBLY_SOURCE_RUN_DIR", "").strip()
+    if override:
+        candidates.append(Path(override).expanduser())
+    if cache_root is not None:
+        manifest_path = cache_root / "manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                for raw in manifest.get("source_run_dirs", []) or []:
+                    if str(raw).strip():
+                        candidates.append(Path(str(raw)).expanduser())
+            except Exception:
+                pass
+    candidates.extend((DEFAULT_SOURCE_RUN_DIR, LEGACY_SOURCE_RUN_DIR))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        dense_root = candidate.resolve() if candidate.exists() else candidate
+        key = str(dense_root)
+        if key in seen:
+            continue
+        seen.add(key)
+        required = (
+            dense_root / "features",
+            dense_root / "labels",
+            dense_root / "snapshot.json",
+            dense_root / "resolved_config.json",
+        )
+        if all(path.exists() for path in required):
+            return dense_root
+
+    raise FileNotFoundError(
+        "Unable to resolve a valid subassembly dense_temporal source run. "
+        "Run prepare.py first or set AUTORESEARCH_MINDA_SUBASSEMBLY_SOURCE_RUN_DIR."
+    )
+
+
+def _resolve_cache_root() -> Path:
+    override = os.getenv("AUTORESEARCH_CACHE_DIR", "").strip()
+    base = Path(override).expanduser().resolve() if override else DEFAULT_CACHE_DIR.resolve()
+    return base / CACHE_VERSION
+
+
+def resolve_time_budget_seconds() -> float:
+    raw = os.getenv("AUTORESEARCH_TIME_BUDGET_SECONDS", "").strip()
+    if not raw:
+        return float(TIME_BUDGET)
+    return max(1.0, float(raw))
+
+
+def resolve_total_timeout_seconds() -> float:
+    raw = os.getenv("AUTORESEARCH_TOTAL_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return float(TOTAL_TIMEOUT_SECONDS)
+    return max(resolve_time_budget_seconds(), float(raw))
+
+
+def resolve_stage_budget_seconds(total_budget_seconds: float) -> Tuple[float, float]:
+    tcn_raw = os.getenv("AUTORESEARCH_TCN_STAGE_SECONDS", "").strip()
+    probe_raw = os.getenv("AUTORESEARCH_PROBE_STAGE_SECONDS", "").strip()
+    tcn_seconds = float(tcn_raw) if tcn_raw else float(DEFAULT_TCN_STAGE_SECONDS)
+    probe_seconds = float(probe_raw) if probe_raw else float(DEFAULT_PROBE_STAGE_SECONDS)
+    requested = max(1e-6, float(tcn_seconds + probe_seconds))
+    scale = float(total_budget_seconds) / float(requested)
+    return float(tcn_seconds * scale), float(probe_seconds * scale)
+
+
+def _ensure_cache(source_run_dir: Path, cache_root: Path) -> Path:
+    manifest_path = cache_root / "manifest.json"
+    need_build = not manifest_path.exists()
+    if not need_build:
+        try:
+            manifest = load_manifest(cache_root=cache_root)
+            sources = {str(Path(item).resolve()) for item in manifest.get("source_run_dirs", [])}
+            need_build = (
+                str(source_run_dir.resolve()) not in sources
+                or str(manifest.get("split_policy") or "").strip() != DEFAULT_SPLIT_POLICY
+                or float(manifest.get("val_ratio") or 0.0) != float(VAL_RATIO)
+            )
+        except Exception:
+            need_build = True
+    if need_build:
+        LOGGER.info(
+            "Building cache from %s with split_policy=%s val_ratio=%.2f",
+            source_run_dir,
+            DEFAULT_SPLIT_POLICY,
+            float(VAL_RATIO),
+        )
+        configure_cache_paths(cache_root)
+        build_cache(
+            source_run_dirs=[str(source_run_dir)],
+            source_globs=[],
+            camera_include_regex=None,
+            video_include_regex=None,
+            path_include_regex=None,
+            split_policy=DEFAULT_SPLIT_POLICY,
+            val_ratio=float(VAL_RATIO),
+            seed=SEED,
+            force=True,
+        )
+    return cache_root
+
+
+def _video_camera_index(records: Sequence[SegmentRecord]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for record in records:
+        current = out.get(record.video_id)
+        camera_id = str(record.camera_id)
+        if current is None:
+            out[record.video_id] = camera_id
+            continue
+        if current != camera_id:
+            raise ValueError(
+                f"Video {record.video_id} maps to multiple cameras: {current!r} vs {camera_id!r}"
+            )
+    return out
+
+
+def _load_split_plan(cache_root: Path) -> SplitPlan:
+    manifest = load_manifest(cache_root=cache_root)
+    train_records = tuple(load_split_records("train", cache_root=cache_root))
+    val_records = tuple(load_split_records("val", cache_root=cache_root))
+    val_eval_records = tuple(load_split_records("val_eval", cache_root=cache_root))
+    if not train_records or not val_records or not val_eval_records:
+        raise RuntimeError(f"Cache {cache_root} has an empty train/val/val_eval split.")
+
+    train_videos = tuple(sorted({record.video_id for record in train_records}))
+    val_videos = tuple(sorted({record.video_id for record in val_records}))
+    video_to_camera = _video_camera_index(tuple(train_records) + tuple(val_records))
+    camera_total_counts: Dict[str, int] = {}
+    for camera_id in video_to_camera.values():
+        camera_total_counts[camera_id] = int(camera_total_counts.get(camera_id, 0) + 1)
+    camera_val_counts: Dict[str, int] = {}
+    for video_id in val_videos:
+        camera_id = video_to_camera[video_id]
+        camera_val_counts[camera_id] = int(camera_val_counts.get(camera_id, 0) + 1)
+    for camera_id in camera_total_counts:
+        camera_val_counts.setdefault(camera_id, 0)
+
+    return SplitPlan(
+        split_policy=str(manifest.get("split_policy") or DEFAULT_SPLIT_POLICY),
+        train_records=train_records,
+        val_records=val_records,
+        val_eval_records=val_eval_records,
+        train_videos=train_videos,
+        val_videos=val_videos,
+        camera_val_counts={
+            str(key): int(value)
+            for key, value in (manifest.get("camera_val_counts") or camera_val_counts).items()
+        },
+        camera_total_counts={
+            str(key): int(value)
+            for key, value in (manifest.get("camera_total_counts") or camera_total_counts).items()
+        },
+        target_val_videos=float(manifest.get("split_target_val_videos") or 0.0),
+    )
+
+
+def _resolve_pooler_path(records: Sequence[SegmentRecord]) -> Path:
+    for record in records:
+        raw = str(record.pooler_checkpoint or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if path.exists():
+                return path.resolve()
+    fallback = WORKSPACE_ROOT / "encoder_models" / "vjepa2_attention_poolers" / "ssv2-vitl-16x2x3.pt"
+    if fallback.exists():
+        return fallback.resolve()
+    raise FileNotFoundError("No valid pooler checkpoint found in prepared records.")
+
+
+def _resolve_encoder_spec(token_dim: int) -> Tuple[str, Path]:
+    token_dim_i = int(token_dim)
+    if token_dim_i == 1024:
+        path = WORKSPACE_ROOT / "encoder_models" / "vitl.pt"
+        model = "large"
+    elif token_dim_i == 1408:
+        path = WORKSPACE_ROOT / "encoder_models" / "vitg-384.pt"
+        model = "giant"
+    else:
+        raise RuntimeError(f"Unsupported token_dim={token_dim_i} for V-JEPA pooler replay")
+    if not path.exists():
+        raise FileNotFoundError(f"Missing encoder checkpoint: {path}")
+    os.environ["VJEPA_ENCODER_MODEL"] = str(model)
+    os.environ["VJEPA_ENCODER_CHECKPOINT"] = str(path)
+    os.environ["DENSE_TEMPORAL_ENCODER_MODEL"] = str(model)
+    os.environ["DENSE_TEMPORAL_ENCODER_CHECKPOINT"] = str(path)
+    return model, path.resolve()
+
+
+def _build_space_spec(output_root: Path) -> SpaceSpec:
+    cache_root = _resolve_cache_root()
+    source_run_dir = _resolve_source_run_dir(cache_root)
+    cache_root = _ensure_cache(source_run_dir, cache_root)
+    split_plan = _load_split_plan(cache_root)
+    all_records = tuple(split_plan.train_records) + tuple(split_plan.val_records)
+    pooler_path = _resolve_pooler_path(all_records)
+    encoder_model, encoder_checkpoint = _resolve_encoder_spec(int(all_records[0].token_dim))
+    output_dir = output_root / "subassembly"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return SpaceSpec(
+        name=SPACE_NAME,
+        source_run_dir=source_run_dir,
+        cache_root=cache_root,
+        output_dir=output_dir,
+        split_plan=split_plan,
+        pooler_path=pooler_path,
+        encoder_model=encoder_model,
+        encoder_checkpoint=encoder_checkpoint,
+    )
+
+
+def _torch_from_numpy_safe(
+    array: np.ndarray,
+    *,
+    device: torch.device,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    np_array = np.asarray(array)
+    if not np_array.flags.writeable:
+        np_array = np_array.copy()
+    tensor = torch.from_numpy(np_array).to(device=device)
+    if dtype is not None:
+        tensor = tensor.to(dtype=dtype)
+    return tensor
+
+
+def _numpy_writable(array: np.ndarray) -> np.ndarray:
+    np_array = np.asarray(array)
+    if not np_array.flags.writeable:
+        np_array = np_array.copy()
+    return np_array
+
+
+def _autocast_context(*, enabled: bool, dtype: torch.dtype):
+    if not enabled:
+        return nullcontext()
+    return torch.amp.autocast(device_type="cuda", dtype=dtype)
+
+
+def _clone_state_dict(module: nn.Module) -> Dict[str, torch.Tensor]:
+    return {name: tensor.detach().cpu().clone() for name, tensor in module.state_dict().items()}
+
+
+def _clone_tensor_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    return {name: tensor.detach().cpu().clone() for name, tensor in state_dict.items()}
+
+
+def _restore_state_dict(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> None:
+    module.load_state_dict({name: tensor.detach().cpu() for name, tensor in state_dict.items()})
+
+
+def _update_ema_state(ema_state: Dict[str, torch.Tensor], module: nn.Module, decay: float) -> None:
+    alpha = 1.0 - float(decay)
+    with torch.no_grad():
+        for name, tensor in module.state_dict().items():
+            current = tensor.detach().cpu()
+            if name not in ema_state:
+                ema_state[name] = current.clone()
+                continue
+            ema_tensor = ema_state[name]
+            if current.is_floating_point():
+                ema_tensor.mul_(float(decay)).add_(current, alpha=alpha)
+            else:
+                ema_tensor.copy_(current)
+
+
+def _peak_vram_mb() -> float:
+    if not torch.cuda.is_available():
+        return 0.0
+    return float(torch.cuda.max_memory_allocated() / (1024.0 * 1024.0))
+
+
+def _count_trainable_params(module: nn.Module) -> int:
+    return int(sum(int(param.numel()) for param in module.parameters() if param.requires_grad))
+
+
+def _build_supervised_segment(
+    record: SegmentRecord,
+    *,
+    use_eval_span: bool,
+    cfg: Stage0Config,
+) -> SupervisedSegment:
+    payload = load_segment_arrays(record, representation="pooled_z0", use_eval_span=use_eval_span)
+    timestamps_ms = payload["timestamps_ms"].astype(np.int64, copy=False)
+    gt_pairs = tuple(
+        EventPair(start_ms=int(start_ms), end_ms=int(end_ms))
+        for start_ms, end_ms in record.event_pairs_ms
+        if int(start_ms) >= int(timestamps_ms[0]) and int(end_ms) <= int(timestamps_ms[-1])
+    )
+    mapped_cycles, _ = map_cycles_to_indices(
+        [CycleInterval(start_ms=item.start_ms, end_ms=item.end_ms) for item in gt_pairs],
+        timestamps_ms,
+        boundary_index_mode=str(cfg.boundary_index_mode),
+    )
+    y_start, y_end, y_cycle, mask_start_end = build_boundary_targets(
+        int(timestamps_ms.shape[0]),
+        mapped_cycles,
+        ignore_radius=int(cfg.ignore_radius),
+        smooth_sigma=float(cfg.smooth_sigma),
+    )
+    return SupervisedSegment(
+        record=record,
+        global_start_idx=int(payload["slice_start_idx"]),
+        global_end_idx=int(payload["slice_end_idx"]),
+        timestamps_ms=timestamps_ms,
+        y_start=y_start.astype(np.float32, copy=False),
+        y_end=y_end.astype(np.float32, copy=False),
+        y_cycle=y_cycle.astype(np.float32, copy=False),
+        mask_start_end=mask_start_end.astype(np.float32, copy=False),
+        pooled_z0=payload["pooled_z0"].astype(np.float32, copy=False),
+        gt_pairs=gt_pairs,
+    )
+
+
+def _build_train_sampling_weights(segments: Sequence[SupervisedSegment]) -> np.ndarray:
+    if not segments:
+        return np.zeros((0,), dtype=np.float64)
+    return np.asarray([math.sqrt(max(1, len(segment.gt_pairs))) for segment in segments], dtype=np.float64)
+
+
+def _choose_train_segments(
+    segments: Sequence[SupervisedSegment],
+    *,
+    sampling_weights: np.ndarray,
+    batch_size: int,
+    rng: np.random.RandomState,
+) -> List[SupervisedSegment]:
+    segment_list = list(segments)
+    if not segment_list:
+        return []
+    probs = np.asarray(sampling_weights, dtype=np.float64)
+    if probs.shape != (len(segment_list),) or float(probs.sum()) <= 0.0:
+        probs = np.ones((len(segment_list),), dtype=np.float64)
+    probs = probs / float(probs.sum())
+    batch_size_i = int(batch_size)
+    if batch_size_i <= len(segment_list):
+        indices = rng.choice(len(segment_list), size=batch_size_i, replace=False, p=probs)
+    else:
+        unique = rng.choice(len(segment_list), size=len(segment_list), replace=False, p=probs)
+        extra = rng.choice(len(segment_list), size=batch_size_i - len(segment_list), replace=True, p=probs)
+        indices = np.concatenate((unique, extra), axis=0)
+    return [segment_list[int(index)] for index in indices]
+
+
+def _sample_chunk_bounds(length: int, chunk_len: int, rng: np.random.RandomState) -> Tuple[int, int]:
+    if length <= int(chunk_len):
+        return 0, int(length) - 1
+    start = int(rng.randint(0, int(length) - int(chunk_len) + 1))
+    end = start + int(chunk_len) - 1
+    return int(start), int(end)
+
+
+def _collate_train_batch(
+    segments: Sequence[SupervisedSegment],
+    *,
+    cfg: Stage0Config,
+    sampling_weights: np.ndarray,
+    rng: np.random.RandomState,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    chosen: List[Tuple[SupervisedSegment, int, int]] = []
+    max_len = 0
+    for segment in _choose_train_segments(
+        segments,
+        sampling_weights=sampling_weights,
+        batch_size=int(cfg.batch_size),
+        rng=rng,
+    ):
+        lo, hi = _sample_chunk_bounds(segment.length, int(cfg.chunk_len), rng)
+        chosen.append((segment, lo, hi))
+        max_len = max(max_len, int(hi - lo + 1))
+
+    feature_batch = torch.zeros((len(chosen), max_len, segments[0].record.embedding_dim), dtype=torch.float32)
+    y_start = torch.zeros((len(chosen), max_len), dtype=torch.float32)
+    y_end = torch.zeros((len(chosen), max_len), dtype=torch.float32)
+    y_cycle = torch.zeros((len(chosen), max_len), dtype=torch.float32)
+    mask_start_end = torch.zeros((len(chosen), max_len), dtype=torch.float32)
+    valid_mask = torch.zeros((len(chosen), max_len), dtype=torch.float32)
+
+    for row, (segment, lo, hi) in enumerate(chosen):
+        size = int(hi - lo + 1)
+        feature_batch[row, :size] = torch.from_numpy(segment.pooled_z0[lo : hi + 1])
+        y_start[row, :size] = torch.from_numpy(segment.y_start[lo : hi + 1])
+        y_end[row, :size] = torch.from_numpy(segment.y_end[lo : hi + 1])
+        y_cycle[row, :size] = torch.from_numpy(segment.y_cycle[lo : hi + 1])
+        mask_start_end[row, :size] = torch.from_numpy(segment.mask_start_end[lo : hi + 1])
+        valid_mask[row, :size] = 1.0
+
+    targets = {
+        "y_start": y_start,
+        "y_end": y_end,
+        "y_cycle": y_cycle,
+        "mask_start_end": mask_start_end,
+        "valid_mask": valid_mask,
+    }
+    return feature_batch, targets
+
+
+def _get_lr_multiplier(*, progress: float, cfg: Stage0Config) -> float:
+    warmup = float(cfg.warmup_ratio)
+    if progress <= 0.0:
+        return 0.0 if warmup > 0.0 else 1.0
+    if warmup > 0.0 and progress < warmup:
+        return progress / warmup
+    tail = float(cfg.final_lr_frac)
+    decay_progress = (progress - warmup) / max(1e-6, 1.0 - warmup)
+    decay_progress = min(max(decay_progress, 0.0), 1.0)
+    return 1.0 - (1.0 - tail) * decay_progress
+
+
+def _compute_transition_consistency_loss(logits: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
+    cycle_probs = torch.sigmoid(logits[:, :, 2])
+    start_probs = torch.sigmoid(logits[:, :, 0])
+    end_probs = torch.sigmoid(logits[:, :, 1])
+
+    prev_cycle = F.pad(cycle_probs[:, :-1], (1, 0))
+    next_cycle = F.pad(cycle_probs[:, 1:], (0, 1))
+    start_from_cycle = (cycle_probs - prev_cycle).clamp_min(0.0)
+    end_from_cycle = (cycle_probs - next_cycle).clamp_min(0.0)
+
+    transition_mask = targets["mask_start_end"].to(logits.device) * targets["valid_mask"].to(logits.device)
+    start_loss = masked_mean((start_probs - start_from_cycle).square(), transition_mask)
+    end_loss = masked_mean((end_probs - end_from_cycle).square(), transition_mask)
+    return 0.5 * (start_loss + end_loss)
+
+
+def _compute_stage0_loss(
+    logits: torch.Tensor,
+    features: torch.Tensor,
+    targets: Dict[str, torch.Tensor],
+    *,
+    cfg: Stage0Config,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    del features
+    start_logits = logits[:, :, 0]
+    end_logits = logits[:, :, 1]
+    cycle_logits = logits[:, :, 2]
+
+    pos_weight_start_end = torch.tensor(float(cfg.pos_weight_start_end), device=logits.device)
+    pos_weight_cycle = torch.tensor(float(cfg.pos_weight_cycle), device=logits.device)
+
+    start_loss_raw = focal_bce_with_logits(
+        start_logits,
+        targets["y_start"].to(logits.device),
+        pos_weight=pos_weight_start_end,
+        gamma=float(cfg.focal_gamma),
+    )
+    end_loss_raw = focal_bce_with_logits(
+        end_logits,
+        targets["y_end"].to(logits.device),
+        pos_weight=pos_weight_start_end,
+        gamma=float(cfg.focal_gamma),
+    )
+    cycle_loss_raw = focal_bce_with_logits(
+        cycle_logits,
+        targets["y_cycle"].to(logits.device),
+        pos_weight=pos_weight_cycle,
+        gamma=float(cfg.focal_gamma),
+    )
+
+    mask_start_end = targets["mask_start_end"].to(logits.device) * targets["valid_mask"].to(logits.device)
+    valid_mask = targets["valid_mask"].to(logits.device)
+    start_loss = masked_mean(start_loss_raw, mask_start_end)
+    end_loss = masked_mean(end_loss_raw, mask_start_end)
+    cycle_loss = masked_mean(cycle_loss_raw, valid_mask)
+    transition_loss = _compute_transition_consistency_loss(logits, targets)
+
+    total = (
+        start_loss
+        + end_loss
+        + (float(cfg.cycle_loss_weight) * cycle_loss)
+        + (float(cfg.transition_consistency_weight) * transition_loss)
+    )
+    stats = {
+        "loss_total": float(total.detach().item()),
+        "loss_start": float(start_loss.detach().item()),
+        "loss_end": float(end_loss.detach().item()),
+        "loss_cycle": float(cycle_loss.detach().item()),
+        "loss_aux": 0.0,
+        "loss_transition": float(transition_loss.detach().item()),
+    }
+    return total, stats
+
+
+def _checkpoint_decode_heads(payload: Dict[str, Any]) -> Tuple[List[str], int]:
+    heads = [str(head).strip().lower() for head in payload.get("heads", []) if str(head).strip()]
+    if "boundary" in heads and "start" not in heads and "end" not in heads:
+        return ["boundary", "cycle"], 2
+    return ["start", "end", "cycle"], 3
+
+
+def _evaluate_pooled_checkpoint(
+    checkpoint_path: Path,
+    records: Sequence[SegmentRecord],
+    *,
+    device: torch.device,
+) -> Dict[str, float]:
+    if not records:
+        raise RuntimeError("Validation records are required for pooled checkpoint evaluation")
+    payload = torch.load(checkpoint_path, map_location="cpu")
+    model = prod_tcn.load_boundary_checkpoint(
+        checkpoint_path,
+        input_dim=int(records[0].embedding_dim),
+        device=str(device),
+    )
+    decode_heads, base_heads = _checkpoint_decode_heads(payload)
+    predictions: Dict[str, Sequence[EventPair]] = {}
+    with torch.inference_mode():
+        for record in records:
+            arrays = load_segment_arrays(record, representation="pooled_z0", use_eval_span=True)
+            batch = torch.from_numpy(arrays["pooled_z0"]).unsqueeze(0).to(device=device)
+            logits = model(batch).squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
+            probs = 1.0 / (1.0 + np.exp(-logits[:, :base_heads]))
+            predictions[record.segment_id] = decode_event_pairs(
+                probs,
+                arrays["timestamps_ms"],
+                heads=decode_heads,
+            )
+    return evaluate_predictions(predictions, records=list(records))
+
+
+def _encode_tokens_with_probe(probe: nn.Module, tokens: np.ndarray, *, device: torch.device) -> np.ndarray:
+    if int(tokens.shape[0]) <= 0:
+        return np.zeros((0, int(tokens.shape[-1])), dtype=np.float32)
+    outputs: List[np.ndarray] = []
+    use_autocast = device.type == "cuda"
+    probe.eval()
+    with torch.inference_mode():
+        for lo in range(0, int(tokens.shape[0]), int(EVAL_TOKEN_CHUNK)):
+            hi = min(int(tokens.shape[0]), lo + int(EVAL_TOKEN_CHUNK))
+            batch = torch.from_numpy(tokens[lo:hi]).to(device=device)
+            autocast_ctx = torch.cuda.amp.autocast(dtype=torch.bfloat16) if use_autocast else nullcontext()
+            with autocast_ctx:
+                pooled = probe(batch).squeeze(1)
+            outputs.append(pooled.detach().cpu().numpy().astype(np.float32, copy=False))
+    return np.concatenate(outputs, axis=0) if outputs else np.zeros((0, int(tokens.shape[-1])), dtype=np.float32)
+
+
+def _compute_timing_mae_ms(metrics: Dict[str, float]) -> float:
+    return 0.5 * (float(metrics["val_start_mae_ms"]) + float(metrics["val_end_mae_ms"]))
+
+
+def _is_better_metrics(candidate: Dict[str, float], incumbent: Optional[Dict[str, float]]) -> bool:
+    if incumbent is None:
+        return True
+    eps = 1e-9
+    candidate_f1 = float(candidate["val_pair_f1"])
+    incumbent_f1 = float(incumbent["val_pair_f1"])
+    if candidate_f1 > incumbent_f1 + eps:
+        return True
+    if candidate_f1 < incumbent_f1 - eps:
+        return False
+    candidate_count = float(candidate["val_count_mae"])
+    incumbent_count = float(incumbent["val_count_mae"])
+    if candidate_count < incumbent_count - eps:
+        return True
+    if candidate_count > incumbent_count + eps:
+        return False
+    return _compute_timing_mae_ms(candidate) < (_compute_timing_mae_ms(incumbent) - eps)
+
+
+def _stage0_train_cfg_dict(cfg: Stage0Config, *, steps_per_epoch: int) -> Dict[str, Any]:
+    return {
+        "seq_model": str(cfg.seq_model),
+        "hidden_dim": int(cfg.hidden_dim),
+        "kernel_size": int(cfg.kernel_size),
+        "dropout": float(cfg.dropout),
+        "use_layernorm": bool(cfg.use_layernorm),
+        "dilations": tuple(int(item) for item in cfg.dilations),
+        "bidirectional": bool(cfg.bidirectional),
+        "task_specific_heads": bool(cfg.task_specific_heads),
+        "boundary_loss": "focal",
+        "gamma": float(cfg.focal_gamma),
+        "pos_weight_start_end": float(cfg.pos_weight_start_end),
+        "pos_weight_cycle": float(cfg.pos_weight_cycle),
+        "use_phase_head": False,
+        "phase_loss_weight": 0.0,
+        "phase_loss": "mse",
+        "phase_huber_delta": 0.25,
+        "ranking_loss_weight": 0.0,
+        "ranking_margin": float(cfg.neg_margin),
+        "ranking_window_radius": 1,
+        "cyclece_loss_weight": 0.0,
+        "cyclece_tau": 0.7,
+        "cyclece_radius": 1,
+        "class_loss_weight": 0.0,
+        "class_sampling_alpha": 0.35,
+        "temporal_structure_mode": "cyclic",
+        "ignore_radius": int(cfg.ignore_radius),
+        "smooth_sigma": float(cfg.smooth_sigma),
+        "combine_start_end": bool(cfg.combine_start_end),
+        "boundary_index_mode": str(cfg.boundary_index_mode),
+        "lr": float(cfg.lr),
+        "weight_decay": float(cfg.weight_decay),
+        "max_epochs": int(cfg.epochs),
+        "seed": int(cfg.seed),
+        "device": "cuda",
+        "grad_clip_norm": float(cfg.grad_clip_norm),
+        "chunk_len": int(cfg.chunk_len),
+        "chunks_per_epoch": int(steps_per_epoch),
+        "neg_chunk_fraction": 0.0,
+        "stage1_epochs": 20,
+        "stage1_probe_lr": 1.5e-5,
+        "stage1_last_block_epoch": 0,
+        "stage1_all_epoch": 999,
+        "stage1_chunks_per_stream": 12,
+        "stage1_tcn_tune_mode": "frozen",
+        "stage1_tcn_last_blocks": 1,
+        "stage1_tcn_lr": 5e-5,
+        "stage1_stream_sampling_mode": "uniform",
+        "stage1_stream_sampling_power": 0.5,
+        "stage1_stream_sampling_min_weight": 1.0,
+        "stage1_cyclece_weight": 1.0,
+        "stage1_smooth_weight": 0.05,
+        "stage1_distill_weight": 0.10,
+        "stage1_class_weight": 0.0,
+    }
+
+
+def _save_stage0_checkpoint(
+    checkpoint_path: Path,
+    *,
+    model: Stage0BoundaryModel,
+    cfg: Stage0Config,
+    metrics: Dict[str, float],
+    best_epoch: int,
+    best_source: str,
+    steps_per_epoch: int,
+    total_steps: int,
+    train_records: Sequence[SegmentRecord],
+    val_records: Sequence[SegmentRecord],
+    pooler_path: Path,
+    cache_root: Path,
+) -> None:
+    model_cfg = BoundaryTCNConfig(
+        input_dim=int(train_records[0].embedding_dim),
+        hidden_dim=int(cfg.hidden_dim),
+        out_dim=3,
+        kernel_size=int(cfg.kernel_size),
+        dropout=float(cfg.dropout),
+        use_layernorm=bool(cfg.use_layernorm),
+        dilations=tuple(int(item) for item in cfg.dilations),
+        bidirectional=bool(cfg.bidirectional),
+        task_specific_heads=bool(cfg.task_specific_heads),
+        base_heads=3,
+    )
+    train_cfg = _stage0_train_cfg_dict(cfg, steps_per_epoch=steps_per_epoch)
+    payload: Dict[str, Any] = {
+        "seq_model": "tcn",
+        "model_state": {name: tensor.detach().cpu() for name, tensor in model.tcn.state_dict().items()},
+        "model_cfg": asdict(model_cfg),
+        "train_cfg": train_cfg,
+        "heads": ["start", "end", "cycle"],
+        "effective_losses": {
+            "boundary": True,
+            "cycle": True,
+            "phase": False,
+            "ranking": False,
+            "cyclece": False,
+            "class": False,
+            "transition_consistency": True,
+        },
+        "multiclass_head": {
+            "enabled": False,
+            "class_offset": 3,
+            "num_classes": 0,
+            "class_index_to_label_id": [],
+            "class_index_to_label_name": [],
+            "label_id_to_label_name": {},
+            "action_label_ids": [],
+            "loss_weight": 0.0,
+            "class_weights": [],
+        },
+        "representation_mode": "pooled_z0",
+        "pooler_tune_mode": "off",
+        "pooler_checkpoint": str(pooler_path),
+        "pooler_sha": str(train_records[0].pooler_sha),
+        "model_family": str(cfg.model_family),
+        "metrics": dict(metrics),
+        "pos_weight_cycle": float(cfg.pos_weight_cycle),
+        "pos_weight_start_end": float(cfg.pos_weight_start_end),
+        "best_epoch": int(best_epoch),
+        "best_source": str(best_source),
+        "steps_per_epoch": int(steps_per_epoch),
+        "total_steps": int(total_steps),
+        "cache_root": str(cache_root),
+        "train_segments": int(len(train_records)),
+        "val_segments": int(len(val_records)),
+        "replay_contract": {
+            "faithful_stage0_recipe": True,
+            "intentional_deviations": [
+                "wallclock_limited_stage0",
+                "camera_stratified_hash_60_40_split",
+            ],
+        },
+    }
+    payload["boundary_arch_version"] = prod_tcn.infer_boundary_arch_version(
+        model_cfg=payload["model_cfg"],
+        model_state=payload["model_state"],
+    )
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, checkpoint_path)
+
+
+def _run_stage0(
+    *,
+    spec: SpaceSpec,
+    output_dir: Path,
+    cfg: Stage0Config,
+    budget_seconds: float,
+    device: torch.device,
+) -> Stage0Result:
+    train_records = spec.split_plan.train_records
+    val_records = spec.split_plan.val_eval_records
+    if not train_records or not val_records:
+        raise RuntimeError("Stage-0 requires non-empty train and val record sets")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _set_seed(int(cfg.seed))
+    rng = np.random.RandomState(int(cfg.seed))
+
+    train_segments = [
+        _build_supervised_segment(record, use_eval_span=False, cfg=cfg)
+        for record in train_records
+    ]
+    sampling_weights = _build_train_sampling_weights(train_segments)
+    model = Stage0BoundaryModel(input_dim=int(train_records[0].embedding_dim), cfg=cfg).to(device)
+    trainable_params = [param for param in model.parameters() if param.requires_grad]
+    if not trainable_params:
+        raise RuntimeError("No trainable parameters found for stage-0 replay")
+    optimizer = torch.optim.AdamW(trainable_params, lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
+    use_autocast = device.type == "cuda"
+    autocast_dtype = torch.bfloat16 if use_autocast else torch.float32
+
+    steps_per_epoch = int(max(1, math.ceil(len(train_segments) / float(cfg.batch_size))))
+    total_steps = int(max(1, int(cfg.epochs) * steps_per_epoch))
+    LOGGER.info(
+        "Stage-0 replay: train_segments=%d val_segments=%d epochs=%d steps_per_epoch=%d total_steps=%d budget=%.1fs",
+        len(train_segments),
+        len(val_records),
+        int(cfg.epochs),
+        int(steps_per_epoch),
+        int(total_steps),
+        float(budget_seconds),
+    )
+
+    deadline = time.monotonic() + float(budget_seconds)
+    history: List[Dict[str, Any]] = []
+    best_eval_metrics: Optional[Dict[str, float]] = None
+    best_eval_state: Optional[Dict[str, torch.Tensor]] = None
+    best_source = "none"
+    best_epoch = -1
+    ema_state: Optional[Dict[str, torch.Tensor]] = None
+    peak_vram_mb = 0.0
+    global_step = 0
+    start_t = time.time()
+
+    for epoch in range(int(cfg.epochs)):
+        model.train()
+        epoch_totals = {
+            "loss_total": 0.0,
+            "loss_start": 0.0,
+            "loss_end": 0.0,
+            "loss_cycle": 0.0,
+            "loss_aux": 0.0,
+            "loss_transition": 0.0,
+        }
+        epoch_t0 = time.time()
+        completed_steps = 0
+
+        for _ in range(int(steps_per_epoch)):
+            if completed_steps > 0 and time.monotonic() >= deadline:
+                break
+            optimizer.zero_grad(set_to_none=True)
+            running_stats = {key: 0.0 for key in epoch_totals}
+            progress = float(global_step) / float(max(1, total_steps - 1))
+            for _micro_step in range(int(cfg.grad_accum_steps)):
+                features_cpu, targets = _collate_train_batch(
+                    train_segments,
+                    cfg=cfg,
+                    sampling_weights=sampling_weights,
+                    rng=rng,
+                )
+                batch = features_cpu.to(device=device, non_blocking=True)
+                targets_t = {key: value.to(device=device, non_blocking=True) for key, value in targets.items()}
+                autocast_ctx = torch.autocast(device_type="cuda", dtype=autocast_dtype) if use_autocast else nullcontext()
+                with autocast_ctx:
+                    logits, features = model(batch)
+                    loss, stats = _compute_stage0_loss(logits, features, targets_t, cfg=cfg)
+                    loss = loss / float(cfg.grad_accum_steps)
+                loss.backward()
+                for key, value in stats.items():
+                    running_stats[key] += float(value)
+
+            if float(cfg.grad_clip_norm) > 0.0:
+                torch.nn.utils.clip_grad_norm_(trainable_params, float(cfg.grad_clip_norm))
+            lr_mult = _get_lr_multiplier(progress=progress, cfg=cfg)
+            for group in optimizer.param_groups:
+                group["lr"] = float(cfg.lr) * float(lr_mult)
+            optimizer.step()
+
+            global_step += 1
+            completed_steps += 1
+            ema_progress = float(global_step) / float(max(1, total_steps))
+            if bool(cfg.ema_enabled):
+                if ema_state is None and ema_progress >= float(cfg.ema_start_ratio):
+                    ema_state = _clone_state_dict(model.tcn)
+                elif ema_state is not None:
+                    _update_ema_state(ema_state, model.tcn, float(cfg.ema_decay))
+
+            for key, value in running_stats.items():
+                epoch_totals[key] += float(value / float(max(1, cfg.grad_accum_steps)))
+
+            if device.type == "cuda":
+                peak_vram_mb = max(peak_vram_mb, float(torch.cuda.max_memory_allocated(device)) / 1024.0 / 1024.0)
+
+            if global_step % int(cfg.log_every_steps) == 0:
+                LOGGER.info(
+                    "stage0 step=%04d/%04d epoch=%03d loss=%.4f start=%.4f end=%.4f cycle=%.4f transition=%.4f lr=%.6g",
+                    global_step,
+                    total_steps,
+                    epoch,
+                    running_stats["loss_total"] / float(max(1, cfg.grad_accum_steps)),
+                    running_stats["loss_start"] / float(max(1, cfg.grad_accum_steps)),
+                    running_stats["loss_end"] / float(max(1, cfg.grad_accum_steps)),
+                    running_stats["loss_cycle"] / float(max(1, cfg.grad_accum_steps)),
+                    running_stats["loss_transition"] / float(max(1, cfg.grad_accum_steps)),
+                    optimizer.param_groups[0]["lr"],
+                )
+
+        if completed_steps <= 0:
+            break
+
+        epoch_row: Dict[str, Any] = {
+            "epoch": int(epoch),
+            "steps": int(completed_steps),
+            "seconds": float(time.time() - epoch_t0),
+        }
+        for key, value in epoch_totals.items():
+            epoch_row[key] = float(value / float(max(1, completed_steps)))
+
+        should_eval = ((epoch + 1) % int(cfg.val_every_epochs) == 0) or (time.monotonic() >= deadline)
+        if should_eval:
+            ckpt_eval_path = output_dir / "_eval_current.pt"
+            _save_stage0_checkpoint(
+                ckpt_eval_path,
+                model=model,
+                cfg=cfg,
+                metrics={},
+                best_epoch=best_epoch,
+                best_source=best_source,
+                steps_per_epoch=steps_per_epoch,
+                total_steps=total_steps,
+                train_records=train_records,
+                val_records=val_records,
+                pooler_path=spec.pooler_path,
+                cache_root=spec.cache_root,
+            )
+            current_metrics = _evaluate_pooled_checkpoint(ckpt_eval_path, val_records, device=device)
+            epoch_row["val_current"] = dict(current_metrics)
+            improved = _is_better_metrics(current_metrics, best_eval_metrics)
+            if improved:
+                best_eval_metrics = dict(current_metrics)
+                best_eval_state = _clone_state_dict(model.tcn)
+                best_epoch = int(epoch)
+                best_source = "current"
+
+            LOGGER.info(
+                "stage0 val epoch=%03d source=current pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
+                epoch,
+                current_metrics["val_pair_f1"],
+                current_metrics["val_count_mae"],
+                _compute_timing_mae_ms(current_metrics),
+                "best" if improved else "keep-prev",
+            )
+
+            if ema_state is not None:
+                current_state = _clone_state_dict(model.tcn)
+                model.tcn.load_state_dict(ema_state)
+                _save_stage0_checkpoint(
+                    ckpt_eval_path,
+                    model=model,
+                    cfg=cfg,
+                    metrics={},
+                    best_epoch=best_epoch,
+                    best_source=best_source,
+                    steps_per_epoch=steps_per_epoch,
+                    total_steps=total_steps,
+                    train_records=train_records,
+                    val_records=val_records,
+                    pooler_path=spec.pooler_path,
+                    cache_root=spec.cache_root,
+                )
+                ema_metrics = _evaluate_pooled_checkpoint(ckpt_eval_path, val_records, device=device)
+                epoch_row["val_ema"] = dict(ema_metrics)
+                improved = _is_better_metrics(ema_metrics, best_eval_metrics)
+                if improved:
+                    best_eval_metrics = dict(ema_metrics)
+                    best_eval_state = _clone_tensor_dict(ema_state)
+                    best_epoch = int(epoch)
+                    best_source = "ema"
+                LOGGER.info(
+                    "stage0 val epoch=%03d source=ema pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
+                    epoch,
+                    ema_metrics["val_pair_f1"],
+                    ema_metrics["val_count_mae"],
+                    _compute_timing_mae_ms(ema_metrics),
+                    "best" if improved else "keep-prev",
+                )
+                model.tcn.load_state_dict(current_state)
+            ckpt_eval_path.unlink(missing_ok=True)
+
+        history.append(epoch_row)
+        if time.monotonic() >= deadline:
+            break
+
+    if best_eval_state is None:
+        best_eval_state = _clone_state_dict(model.tcn)
+        best_epoch = int(max(0, len(history) - 1))
+        best_source = "current"
+
+    model.tcn.load_state_dict(best_eval_state)
+    final_checkpoint = output_dir / "boundary_model.pt"
+    _save_stage0_checkpoint(
+        final_checkpoint,
+        model=model,
+        cfg=cfg,
+        metrics=best_eval_metrics or {},
+        best_epoch=best_epoch,
+        best_source=best_source,
+        steps_per_epoch=steps_per_epoch,
+        total_steps=total_steps,
+        train_records=train_records,
+        val_records=val_records,
+        pooler_path=spec.pooler_path,
+        cache_root=spec.cache_root,
+    )
+    final_metrics = _evaluate_pooled_checkpoint(final_checkpoint, val_records, device=device)
+
+    history_path = output_dir / "history.json"
+    metrics_path = output_dir / "metrics.json"
+    config_snapshot_path = output_dir / "config_snapshot.json"
+    _write_json(
+        history_path,
+        {
+            "history": history,
+            "peak_vram_mb": float(peak_vram_mb),
+            "steps_per_epoch": int(steps_per_epoch),
+            "total_steps": int(total_steps),
+        },
+    )
+    _write_json(
+        metrics_path,
+        {
+            "best_epoch": int(best_epoch),
+            "best_source": str(best_source),
+            "metrics": final_metrics,
+            "timing_mae_ms": float(_compute_timing_mae_ms(final_metrics)),
+        },
+    )
+    _write_json(
+        config_snapshot_path,
+        {
+            "stage0_config": asdict(cfg),
+            "steps_per_epoch": int(steps_per_epoch),
+            "total_steps": int(total_steps),
+            "time_budget_seconds": float(budget_seconds),
+            "split_policy": str(spec.split_plan.split_policy),
+            "val_ratio": float(VAL_RATIO),
+        },
+    )
+    return Stage0Result(
+        checkpoint_path=final_checkpoint,
+        config_snapshot_path=config_snapshot_path,
+        metrics_path=metrics_path,
+        history_path=history_path,
+        metrics=final_metrics,
+        best_epoch=int(best_epoch),
+        best_source=str(best_source),
+        steps_per_epoch=int(steps_per_epoch),
+        total_steps=int(total_steps),
+        elapsed_seconds=float(time.time() - start_t),
+    )
 
 
 def _resolve_vjepa_vendor_root() -> Path:
@@ -144,15 +1276,6 @@ def _resolve_vjepa_vendor_root() -> Path:
 
 @contextmanager
 def _use_vjepa_vendor_src_namespace():
-    """Temporarily expose the vendored V-JEPA namespace package layout.
-
-    The vendor code expects top-level imports from a namespace package named
-    `src`, but this autoresearch entrypoint already imported the main repo's
-    regular `src` package for production training modules. Swap the import view
-    only while the probe pooler is being constructed, then restore the main repo
-    modules immediately afterwards.
-    """
-
     vendor_root = _resolve_vjepa_vendor_root()
     vendor_vjepa2 = (vendor_root / "vjepa2").resolve()
     autoresearch_root = str(ROOT.resolve())
@@ -221,7 +1344,7 @@ def _build_probe_with_vendor_classifier(
 ) -> nn.Module:
     vendor_root = _resolve_vjepa_vendor_root()
     module_path = vendor_root / "src" / "pipeline" / "model_utils.py"
-    module_name = f"_minda_vjepa_model_utils_{time.time_ns()}"
+    module_name = f"_autoresearch_vjepa_model_utils_{time.time_ns()}"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load vendored model_utils from {module_path}")
@@ -244,925 +1367,6 @@ def _build_probe_with_vendor_classifier(
     if missing or unexpected:
         LOGGER.info("Probe load warnings missing=%s unexpected=%s", missing[:8], unexpected[:8])
     return classifier.pooler.to(device)
-
-
-def _torch_from_numpy_safe(
-    array: np.ndarray,
-    *,
-    device: torch.device,
-    dtype: Optional[torch.dtype] = None,
-) -> torch.Tensor:
-    np_array = np.asarray(array)
-    if not np_array.flags.writeable:
-        np_array = np_array.copy()
-    tensor = torch.from_numpy(np_array).to(device=device)
-    if dtype is not None:
-        tensor = tensor.to(dtype=dtype)
-    return tensor
-
-
-def _numpy_writable(array: np.ndarray) -> np.ndarray:
-    np_array = np.asarray(array)
-    if not np_array.flags.writeable:
-        np_array = np_array.copy()
-    return np_array
-
-
-def _autocast_context(*, enabled: bool, dtype: torch.dtype):
-    if not enabled:
-        return nullcontext()
-    return torch.amp.autocast(device_type="cuda", dtype=dtype)
-
-
-@dataclass(frozen=True)
-class SplitPlan:
-    split_policy: str
-    train_records: Tuple[SegmentRecord, ...]
-    val_records: Tuple[SegmentRecord, ...]
-    val_eval_records: Tuple[SegmentRecord, ...]
-    train_videos: Tuple[str, ...]
-    val_videos: Tuple[str, ...]
-    camera_val_counts: Dict[str, int]
-    camera_total_counts: Dict[str, int]
-    target_val_videos: float
-
-
-@dataclass(frozen=True)
-class SpaceSpec:
-    name: str
-    key: str
-    source_run_dir: Path
-    cache_root: Path
-    output_dir: Path
-    cfg: DenseTemporalRunConfig
-    initial_pooler_path: Path
-    encoder_checkpoint: str
-    encoder_model: str
-    split_plan: SplitPlan
-
-
-@dataclass
-class EvalBundle:
-    metrics_by_space: Dict[str, Dict[str, float]]
-    primary_metric: float
-    mean_pair_f1: float
-    mean_count_mae: float
-    mean_start_mae_ms: float
-    mean_end_mae_ms: float
-
-
-def resolve_time_budget_seconds() -> float:
-    raw = os.getenv("AUTORESEARCH_TIME_BUDGET_SECONDS", "").strip()
-    if not raw:
-        return float(TIME_BUDGET)
-    return max(1.0, float(raw))
-
-
-def resolve_total_timeout_seconds() -> float:
-    raw = os.getenv("AUTORESEARCH_TOTAL_TIMEOUT_SECONDS", "").strip()
-    if not raw:
-        return float(TOTAL_TIMEOUT_SECONDS)
-    return max(resolve_time_budget_seconds(), float(raw))
-
-
-def resolve_stage_budget_seconds(total_budget_seconds: float) -> Tuple[float, float]:
-    tcn_raw = os.getenv("AUTORESEARCH_TCN_STAGE_SECONDS", "").strip()
-    probe_raw = os.getenv("AUTORESEARCH_PROBE_STAGE_SECONDS", "").strip()
-    tcn_seconds = float(tcn_raw) if tcn_raw else float(DEFAULT_TCN_STAGE_SECONDS)
-    probe_seconds = float(probe_raw) if probe_raw else float(DEFAULT_PROBE_STAGE_SECONDS)
-    requested = max(1e-6, float(tcn_seconds + probe_seconds))
-    scale = float(total_budget_seconds) / float(requested)
-    return float(tcn_seconds * scale), float(probe_seconds * scale)
-
-
-def _normalize_workspace_path(raw: str) -> Path:
-    text = str(raw or "").strip()
-    if text.startswith("/workspace/"):
-        return (WORKSPACE_ROOT / text[len("/workspace/") :]).resolve()
-    return Path(text).expanduser().resolve()
-
-
-def _load_json(path: Path) -> Dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise TypeError(f"Expected JSON object: {path}")
-    return payload
-
-
-def _merge_effective_snapshot(snapshot_path: Path, resolved_config_path: Path) -> Dict[str, Any]:
-    snapshot = _load_json(snapshot_path)
-    if isinstance(snapshot.get("temporal_model"), dict) and isinstance(snapshot.get("temporal_training"), dict):
-        return snapshot
-    resolved = _load_json(resolved_config_path)
-    merged = dict(snapshot)
-    fallback_fields = {
-        "dataset_mode": resolved.get("dataset_mode"),
-        "temporal_structure_mode": resolved.get("temporal_structure_mode"),
-        "temporal_targets": resolved.get("temporal_targets"),
-        "temporal_model": resolved.get("model"),
-        "temporal_training": resolved.get("train"),
-        "videos": resolved.get("videos"),
-    }
-    for key, value in fallback_fields.items():
-        current = merged.get(key)
-        if current in (None, {}, [], "") and value is not None:
-            merged[key] = value
-    return merged
-
-
-def _resolve_source_candidates(space_name: str) -> List[Path]:
-    key = SPACE_KEY_BY_NAME[space_name]
-    env_key = f"AUTORESEARCH_MINDA_{key.upper()}_SOURCE_RUN_DIR"
-    override = os.getenv(env_key, "").strip()
-    if override:
-        return [Path(override).expanduser()]
-    if space_name == "minda-button-tcn":
-        return [DEFAULT_BUTTON_SOURCE_RUN_DIR]
-    return [DEFAULT_SUBASSEMBLY_MATERIALIZED_DIR, DEFAULT_SUBASSEMBLY_SOURCE_RUN_DIR]
-
-
-def _source_materialization_complete(dense_root: Path) -> Tuple[bool, Optional[str]]:
-    status_path = dense_root / "materialization_status.json"
-    if not status_path.exists():
-        return True, None
-    try:
-        payload = _load_json(status_path)
-    except Exception as exc:
-        return False, f"Unreadable materialization status at {status_path}: {exc}"
-    if bool(payload.get("complete")):
-        return True, None
-    stop_reason = str(payload.get("stop_reason") or "unknown")
-    completed = int(payload.get("jobs_completed") or 0)
-    total = int(payload.get("jobs_total") or 0)
-    return False, f"incomplete source ({completed}/{total} videos, stop_reason={stop_reason})"
-
-
-def _resolve_source_run_dir(space_name: str) -> Path:
-    allow_partial = os.getenv("AUTORESEARCH_ALLOW_PARTIAL_SOURCES", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    for candidate in _resolve_source_candidates(space_name):
-        dense_root = candidate.expanduser().resolve()
-        if (dense_root / "features").exists() and (dense_root / "labels").exists():
-            complete, reason = _source_materialization_complete(dense_root)
-            if not complete and not allow_partial:
-                raise RuntimeError(
-                    f"Prepared source root for {space_name} is present but {reason}. "
-                    "Set AUTORESEARCH_ALLOW_PARTIAL_SOURCES=1 only for smoke tests."
-                )
-            return dense_root
-    candidates = ", ".join(str(path) for path in _resolve_source_candidates(space_name))
-    raise FileNotFoundError(
-        f"No prepared dense_temporal source root found for {space_name}. "
-        f"Checked: {candidates}"
-    )
-
-
-def _resolve_cache_root(space_name: str) -> Path:
-    key = SPACE_KEY_BY_NAME[space_name]
-    env_key = f"AUTORESEARCH_MINDA_{key.upper()}_CACHE_DIR"
-    override = os.getenv(env_key, "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-    return (
-        DEFAULT_BUTTON_CACHE_DIR if space_name == "minda-button-tcn" else DEFAULT_SUBASSEMBLY_CACHE_DIR
-    ).resolve()
-
-
-def _resolve_output_root() -> Path:
-    override = os.getenv("AUTORESEARCH_OUTPUT_DIR", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-    return DEFAULT_OUTPUT_ROOT.resolve()
-
-
-def _resolve_initial_pooler_path(source_run_dir: Path, cfg: DenseTemporalRunConfig) -> Path:
-    staged = source_run_dir / "staged" / "pooler_pretrained.pt"
-    if staged.exists():
-        return staged.resolve()
-    return _normalize_workspace_path(str(cfg.model.pooler_path))
-
-
-def _patch_cfg_for_experiment(cfg: DenseTemporalRunConfig) -> DenseTemporalRunConfig:
-    return replace(
-        cfg,
-        model=replace(
-            cfg.model,
-            pooler_path=str(_normalize_workspace_path(str(cfg.model.pooler_path))),
-            encoder_checkpoint=str(_normalize_workspace_path(str(cfg.model.encoder_checkpoint))),
-        ),
-        train=replace(cfg.train, tcn_bidirectional=False),
-    )
-
-
-def _load_space_cfg(source_run_dir: Path) -> DenseTemporalRunConfig:
-    resolved = _load_json(source_run_dir / "resolved_config.json")
-    snapshot = _merge_effective_snapshot(
-        source_run_dir / "snapshot.json",
-        source_run_dir / "resolved_config.json",
-    )
-    cfg = parse_dense_temporal_snapshot(
-        run_id=str(resolved.get("run_id") or source_run_dir.parent.name),
-        space_id=str(resolved.get("space_id") or ""),
-        run_number=int(resolved.get("run_number") or 0),
-        snapshot=snapshot,
-        env=dict(os.environ),
-    )
-    return _patch_cfg_for_experiment(cfg)
-
-
-def _ensure_cache(space_name: str, source_run_dir: Path, cache_root_base: Path) -> Path:
-    cache_root = cache_root_base / CACHE_VERSION
-    manifest_path = cache_root / "manifest.json"
-    need_build = not manifest_path.exists()
-    if not need_build:
-        try:
-            manifest = load_manifest(cache_root=cache_root)
-            sources = {str(Path(item).resolve()) for item in manifest.get("source_run_dirs", [])}
-            manifest_policy = str(manifest.get("split_policy") or "").strip()
-            need_build = (
-                str(source_run_dir.resolve()) not in sources
-                or manifest_policy != DEFAULT_SPLIT_POLICY
-            )
-        except Exception:
-            need_build = True
-    if need_build:
-        LOGGER.info("Building autoresearch cache for %s from %s", space_name, source_run_dir)
-        configure_cache_paths(cache_root)
-        build_cache(
-            source_run_dirs=[str(source_run_dir)],
-            source_globs=[],
-            camera_include_regex=None,
-            video_include_regex=None,
-            path_include_regex=None,
-            split_policy=DEFAULT_SPLIT_POLICY,
-            val_ratio=0.5,
-            seed=SEED,
-            force=True,
-        )
-    return cache_root
-
-
-def _video_camera_index(records: Sequence[SegmentRecord]) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for record in records:
-        current = out.get(record.video_id)
-        camera_id = str(record.camera_id)
-        if current is None:
-            out[record.video_id] = camera_id
-            continue
-        if current != camera_id:
-            raise ValueError(
-                f"Video {record.video_id} maps to multiple cameras: {current!r} vs {camera_id!r}"
-            )
-    return out
-
-
-def _load_cached_split_plan(cache_root: Path) -> SplitPlan:
-    manifest = load_manifest(cache_root=cache_root)
-    train_records = tuple(load_split_records("train", cache_root=cache_root))
-    val_records = tuple(load_split_records("val", cache_root=cache_root))
-    val_eval_records = tuple(load_split_records("val_eval", cache_root=cache_root))
-    if not train_records or not val_records or not val_eval_records:
-        raise RuntimeError(f"Cache {cache_root} has an empty train/val/val_eval split.")
-
-    train_videos = tuple(sorted({record.video_id for record in train_records}))
-    val_videos = tuple(sorted({record.video_id for record in val_records}))
-    video_to_camera = _video_camera_index(tuple(train_records) + tuple(val_records))
-    camera_total_counts: Dict[str, int] = {}
-    for camera_id in video_to_camera.values():
-        camera_total_counts[camera_id] = int(camera_total_counts.get(camera_id, 0) + 1)
-    camera_val_counts: Dict[str, int] = {}
-    for video_id in val_videos:
-        camera_id = video_to_camera[video_id]
-        camera_val_counts[camera_id] = int(camera_val_counts.get(camera_id, 0) + 1)
-    for camera_id in camera_total_counts:
-        camera_val_counts.setdefault(camera_id, 0)
-
-    return SplitPlan(
-        split_policy=str(manifest.get("split_policy") or DEFAULT_SPLIT_POLICY),
-        train_records=train_records,
-        val_records=val_records,
-        val_eval_records=val_eval_records,
-        train_videos=train_videos,
-        val_videos=val_videos,
-        camera_val_counts={
-            str(key): int(value)
-            for key, value in (manifest.get("camera_val_counts") or camera_val_counts).items()
-        },
-        camera_total_counts={
-            str(key): int(value)
-            for key, value in (manifest.get("camera_total_counts") or camera_total_counts).items()
-        },
-        target_val_videos=(
-            float(manifest["split_target_val_videos"])
-            if manifest.get("split_target_val_videos") is not None
-            else float(len(train_videos) + len(val_videos)) / 2.0
-        ),
-    )
-
-
-def _build_space_spec(space_name: str, output_root: Path) -> SpaceSpec:
-    source_run_dir = _resolve_source_run_dir(space_name)
-    cfg = _load_space_cfg(source_run_dir)
-    cache_root = _ensure_cache(space_name, source_run_dir, _resolve_cache_root(space_name))
-    split_plan = _load_cached_split_plan(cache_root)
-    output_dir = output_root / SPACE_KEY_BY_NAME[space_name]
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return SpaceSpec(
-        name=space_name,
-        key=SPACE_KEY_BY_NAME[space_name],
-        source_run_dir=source_run_dir,
-        cache_root=cache_root,
-        output_dir=output_dir,
-        cfg=cfg,
-        initial_pooler_path=_resolve_initial_pooler_path(source_run_dir, cfg),
-        encoder_checkpoint=str(_normalize_workspace_path(str(cfg.model.encoder_checkpoint))),
-        encoder_model=str(cfg.model.encoder_model),
-        split_plan=split_plan,
-    )
-
-
-def _clone_state_dict(module: nn.Module) -> Dict[str, torch.Tensor]:
-    return {key: value.detach().cpu().clone() for key, value in module.state_dict().items()}
-
-
-def _peak_vram_mb() -> float:
-    if not torch.cuda.is_available():
-        return 0.0
-    return float(torch.cuda.max_memory_allocated() / (1024.0 * 1024.0))
-
-
-def _count_trainable_params(module: nn.Module) -> int:
-    return int(sum(int(param.numel()) for param in module.parameters() if param.requires_grad))
-
-
-def _set_seed(seed: int) -> None:
-    random.seed(int(seed))
-    np.random.seed(int(seed))
-    torch.manual_seed(int(seed))
-
-
-def _score_eval_bundle(bundle: EvalBundle) -> Tuple[float, float, float, float, float]:
-    return (
-        float(bundle.primary_metric),
-        float(bundle.mean_pair_f1),
-        -float(bundle.mean_count_mae),
-        -float(bundle.mean_start_mae_ms),
-        -float(bundle.mean_end_mae_ms),
-    )
-
-
-def _should_replace_eval(best: Optional[EvalBundle], candidate: EvalBundle) -> bool:
-    if best is None:
-        return True
-    return _score_eval_bundle(candidate) > _score_eval_bundle(best)
-
-
-def _bundle_metrics(metrics_by_space: Mapping[str, Mapping[str, float]]) -> EvalBundle:
-    pair_f1s = [float(metrics["val_pair_f1"]) for metrics in metrics_by_space.values()]
-    count_maes = [float(metrics["val_count_mae"]) for metrics in metrics_by_space.values()]
-    start_maes = [float(metrics["val_start_mae_ms"]) for metrics in metrics_by_space.values()]
-    end_maes = [float(metrics["val_end_mae_ms"]) for metrics in metrics_by_space.values()]
-    return EvalBundle(
-        metrics_by_space={key: dict(value) for key, value in metrics_by_space.items()},
-        primary_metric=float(min(pair_f1s)),
-        mean_pair_f1=float(np.mean(pair_f1s)),
-        mean_count_mae=float(np.mean(count_maes)),
-        mean_start_mae_ms=float(np.mean(start_maes)),
-        mean_end_mae_ms=float(np.mean(end_maes)),
-    )
-
-
-def _tcn_heads(base_heads: int, combine: bool) -> Tuple[str, ...]:
-    if combine:
-        return ("boundary", "cycle")[:base_heads]
-    return ("start", "end", "cycle")[:base_heads]
-
-
-@dataclass
-class _TCNPreparedState:
-    streams: List[Any]
-    stream_class_targets: List[np.ndarray]
-    stream_class_masks: List[np.ndarray]
-    class_index_to_label_id: List[int]
-    class_index_to_label_name: List[str]
-    global_action_label_ids: List[int]
-    global_action_label_name_by_id: Dict[int, str]
-    num_class_logits: int
-    class_offset: int
-    phase_offset: int
-    class_weights_np: np.ndarray
-    class_weights_t: Optional[torch.Tensor]
-    pos_weight_cycle: float
-    pos_weight_start_end: float
-    base_heads: int
-    out_dim: int
-    boundary_loss_name: str
-    use_phase_head: bool
-    combine: bool
-    model_cfg_dict: Dict[str, Any]
-    left_ctx: int
-
-
-class TCNTrainer:
-    def __init__(self, spec: SpaceSpec, *, device: torch.device) -> None:
-        self.spec = spec
-        self.device = device
-        self.cfg = prod_tcn.BoundaryTrainConfig(
-            seq_model=str(spec.cfg.train.seq_model),
-            hidden_dim=int(spec.cfg.train.hidden_dim),
-            kernel_size=int(spec.cfg.train.kernel_size),
-            dropout=float(spec.cfg.train.dropout),
-            use_layernorm=bool(spec.cfg.train.use_layernorm),
-            dilations=tuple(int(item) for item in spec.cfg.train.dilations),
-            bidirectional=False,
-            task_specific_heads=bool(spec.cfg.train.tcn_task_specific_heads),
-            boundary_loss=str(spec.cfg.train.boundary_loss),
-            gamma=float(spec.cfg.train.gamma),
-            pos_weight_start_end=float(spec.cfg.train.pos_weight_start_end),
-            pos_weight_cycle=spec.cfg.train.pos_weight_cycle,
-            use_phase_head=bool(spec.cfg.train.use_phase_head),
-            phase_loss_weight=float(spec.cfg.train.phase_loss_weight),
-            ranking_loss_weight=float(spec.cfg.train.ranking_loss_weight),
-            cyclece_loss_weight=float(spec.cfg.train.cyclece_loss_weight),
-            cyclece_tau=float(spec.cfg.train.cyclece_tau),
-            cyclece_radius=int(spec.cfg.train.cyclece_radius),
-            class_loss_weight=float(spec.cfg.train.class_loss_weight),
-            class_sampling_alpha=float(spec.cfg.train.class_sampling_alpha),
-            temporal_structure_mode=str(spec.cfg.temporal_structure_mode),
-            ignore_radius=int(spec.cfg.train.ignore_radius),
-            smooth_sigma=float(spec.cfg.train.smooth_sigma),
-            combine_start_end=bool(spec.cfg.train.combine_start_end),
-            boundary_index_mode=str(spec.cfg.train.boundary_index_mode),
-            lr=float(spec.cfg.train.lr),
-            weight_decay=float(spec.cfg.train.weight_decay),
-            max_epochs=int(spec.cfg.train.max_epochs),
-            seed=int(spec.cfg.train.seed),
-            device=str(device),
-            grad_clip_norm=float(spec.cfg.train.grad_clip_norm),
-            chunk_len=0,
-            chunks_per_epoch=int(spec.cfg.train.chunks_per_epoch),
-            neg_chunk_fraction=float(spec.cfg.train.neg_chunk_fraction),
-        )
-        self.state = self._prepare_state()
-        self.model, model_cfg_dict, left_ctx = prod_tcn._build_model_and_cfg(
-            cfg=self.cfg,
-            input_dim=int(self.state.streams[0].embeddings.shape[1]),
-            out_dim=int(self.state.out_dim),
-            device=self.device,
-        )
-        self.state.model_cfg_dict = dict(model_cfg_dict)
-        self.state.left_ctx = int(left_ctx)
-        self.optimizer = self._build_optimizer()
-        self.pos_w_se_t = torch.tensor(float(self.state.pos_weight_start_end), device=self.device)
-        self.pos_w_cycle_t = torch.tensor(float(self.state.pos_weight_cycle), device=self.device)
-        self.history: List[Dict[str, float]] = []
-        self.epoch = 0
-
-    def _build_optimizer(self) -> torch.optim.Optimizer:
-        if self.device.type == "cuda":
-            try:
-                return torch.optim.AdamW(
-                    self.model.parameters(),
-                    lr=float(self.cfg.lr),
-                    weight_decay=float(self.cfg.weight_decay),
-                    fused=True,
-                )
-            except (RuntimeError, TypeError):
-                pass
-        return torch.optim.AdamW(
-            self.model.parameters(),
-            lr=float(self.cfg.lr),
-            weight_decay=float(self.cfg.weight_decay),
-        )
-
-    def _prepare_state(self) -> _TCNPreparedState:
-        streams = [
-            prod_tcn._prepare_supervised_stream(
-                name=str(record.segment_id),
-                embeddings_path=Path(record.feature_path),
-                labels_path=Path(record.label_path),
-                cfg=self.cfg,
-            )
-            for record in self.spec.split_plan.train_records
-        ]
-        input_dim = int(streams[0].embeddings.shape[1])
-        for stream in streams[1:]:
-            if int(stream.embeddings.shape[1]) != input_dim:
-                raise ValueError("Embedding dim mismatch across streams.")
-
-        y_cycle_all = np.concatenate([stream.y_cycle[stream.mask_cycle > 0.5] for stream in streams], axis=0)
-        pos_weight_cycle = float(prod_tcn._resolve_cycle_pos_weight(y_cycle_all, self.cfg))
-        combine = bool(self.cfg.combine_start_end)
-        base_heads = 2 if combine else 3
-        use_phase_head = bool(self.cfg.use_phase_head)
-
-        idle_label_counts: Dict[int, int] = {}
-        global_action_label_ids: List[int] = []
-        global_action_label_name_by_id: Dict[int, str] = {}
-        for stream in streams:
-            idle_id = int(stream.fallback_idle_label_id)
-            idle_label_counts[idle_id] = idle_label_counts.get(idle_id, 0) + 1
-            for label_id in stream.action_label_ids:
-                lid = int(label_id)
-                if lid in {int(stream.ignore_label_id), int(stream.fallback_idle_label_id)}:
-                    continue
-                if lid not in global_action_label_ids:
-                    global_action_label_ids.append(lid)
-                label_name = prod_tcn._normalize_action_label_name(stream.action_label_name_by_id.get(lid))
-                if label_name and lid not in global_action_label_name_by_id:
-                    global_action_label_name_by_id[lid] = str(label_name)
-        if not global_action_label_ids:
-            global_action_label_ids = [1]
-
-        global_idle_label_id = (
-            max(idle_label_counts.items(), key=lambda item: item[1])[0] if idle_label_counts else 0
-        )
-        global_action_id_to_class_index = {
-            int(label_id): int(index + 1) for index, label_id in enumerate(global_action_label_ids)
-        }
-        num_class_logits = int(1 + len(global_action_label_ids))
-        class_offset = int(base_heads)
-        phase_offset = int(base_heads + num_class_logits)
-        class_index_to_label_id = [int(global_idle_label_id)] + [int(item) for item in global_action_label_ids]
-        class_index_to_label_name = ["idle"] + [
-            str(global_action_label_name_by_id.get(int(item), "")) for item in global_action_label_ids
-        ]
-
-        stream_class_targets: List[np.ndarray] = []
-        stream_class_masks: List[np.ndarray] = []
-        for stream in streams:
-            raw_ids = stream.y_class_label_id.astype(np.int64, copy=False)
-            class_idx = np.zeros(raw_ids.shape, dtype=np.int64)
-            for action_label_id, class_idx_val in global_action_id_to_class_index.items():
-                class_idx[raw_ids == int(action_label_id)] = int(class_idx_val)
-            mask_cls = stream.mask_class.astype(np.float32, copy=False).copy()
-            mask_cls[raw_ids == int(stream.ignore_label_id)] = 0.0
-            stream_class_targets.append(class_idx)
-            stream_class_masks.append(mask_cls)
-
-        supervised_cls = np.concatenate(
-            [
-                stream_class_targets[idx][stream_class_masks[idx] > 0.5]
-                for idx in range(len(streams))
-                if stream_class_masks[idx].size > 0
-            ],
-            axis=0,
-        )
-        class_weights_np = np.ones((num_class_logits,), dtype=np.float32)
-        if supervised_cls.size > 0:
-            counts = np.bincount(
-                supervised_cls.astype(np.int64, copy=False),
-                minlength=num_class_logits,
-            ).astype(np.float32)
-            inv = np.zeros_like(counts)
-            inv[counts > 0] = 1.0 / np.sqrt(counts[counts > 0])
-            if float(np.mean(inv[counts > 0])) > 0.0:
-                inv = inv / float(np.mean(inv[counts > 0]))
-            inv[inv <= 0.0] = 1.0
-            class_weights_np = inv.astype(np.float32, copy=False)
-        class_weights_t = (
-            torch.from_numpy(class_weights_np).to(self.device)
-            if float(self.cfg.class_loss_weight) > 0.0 and num_class_logits > 1
-            else None
-        )
-
-        out_dim = int(base_heads + num_class_logits + (2 if use_phase_head else 0))
-        return _TCNPreparedState(
-            streams=streams,
-            stream_class_targets=stream_class_targets,
-            stream_class_masks=stream_class_masks,
-            class_index_to_label_id=class_index_to_label_id,
-            class_index_to_label_name=class_index_to_label_name,
-            global_action_label_ids=global_action_label_ids,
-            global_action_label_name_by_id=global_action_label_name_by_id,
-            num_class_logits=num_class_logits,
-            class_offset=class_offset,
-            phase_offset=phase_offset,
-            class_weights_np=class_weights_np,
-            class_weights_t=class_weights_t,
-            pos_weight_cycle=pos_weight_cycle,
-            pos_weight_start_end=float(self.cfg.pos_weight_start_end),
-            base_heads=base_heads,
-            out_dim=out_dim,
-            boundary_loss_name=prod_tcn._normalize_boundary_loss(self.cfg.boundary_loss),
-            use_phase_head=use_phase_head,
-            combine=combine,
-            model_cfg_dict={},
-            left_ctx=0,
-        )
-
-    def train_epoch(self) -> Dict[str, float]:
-        self.model.train()
-        self.optimizer.zero_grad(set_to_none=True)
-        combine = bool(self.state.combine)
-        use_phase_head = bool(self.state.use_phase_head)
-        class_weight_lambda = float(max(0.0, self.cfg.class_loss_weight))
-        phase_weight = float(self.cfg.phase_loss_weight)
-        cyclece_weight = float(self.cfg.cyclece_loss_weight)
-
-        conf_epoch = np.zeros((self.state.num_class_logits, self.state.num_class_logits), dtype=np.int64)
-        total_mask = torch.tensor(0.0, device=self.device)
-        total_cycle_T = torch.tensor(0.0, device=self.device)
-        total_class_T = torch.tensor(0.0, device=self.device)
-        total_phase_T = torch.tensor(0.0, device=self.device)
-        cycle_sum = torch.tensor(0.0, device=self.device)
-        class_sum = torch.tensor(0.0, device=self.device)
-        phase_sum = torch.tensor(0.0, device=self.device)
-        cyclece_sum = torch.tensor(0.0, device=self.device)
-        cyclece_count = torch.tensor(0.0, device=self.device)
-        boundary_sum = torch.tensor(0.0, device=self.device)
-        start_sum = torch.tensor(0.0, device=self.device)
-        end_sum = torch.tensor(0.0, device=self.device)
-        total_T = torch.tensor(0.0, device=self.device)
-        p_mean_sum = torch.zeros(self.state.base_heads, device=self.device)
-        p_max = torch.zeros(self.state.base_heads, device=self.device)
-
-        for idx, stream in enumerate(self.state.streams):
-            x = _torch_from_numpy_safe(stream.embeddings, device=self.device).unsqueeze(0)
-            mask = torch.from_numpy(stream.mask_start_end).unsqueeze(0).to(self.device)
-            mask_cycle = torch.from_numpy(stream.mask_cycle).unsqueeze(0).to(self.device)
-            mask_class = torch.from_numpy(self.state.stream_class_masks[idx]).unsqueeze(0).to(self.device)
-            y_cycle = torch.from_numpy(stream.y_cycle).unsqueeze(0).to(self.device)
-            y_class = (
-                torch.from_numpy(self.state.stream_class_targets[idx]).unsqueeze(0).to(self.device).long()
-            )
-            logits = self.model(x)
-
-            mask_count = mask.sum()
-            cycle_count = mask_cycle.sum()
-            class_count = mask_class.sum()
-            phase_mask = torch.from_numpy(stream.mask_phase).unsqueeze(0).to(self.device)
-            phase_count = phase_mask.sum()
-            t_count = torch.tensor(float(stream.embeddings.shape[0]), device=self.device)
-
-            if combine:
-                y_boundary = torch.from_numpy(stream.y_boundary).unsqueeze(0).to(self.device)
-                logits_boundary = logits[:, :, 0]
-                logits_cycle = logits[:, :, 1]
-                loss_boundary_raw = prod_tcn._boundary_loss_with_logits(
-                    logits=logits_boundary,
-                    targets=y_boundary,
-                    pos_weight=self.pos_w_se_t,
-                    gamma=float(self.cfg.gamma),
-                    loss_name=str(self.state.boundary_loss_name),
-                )
-                loss_boundary = prod_tcn.masked_mean(loss_boundary_raw, mask)
-                loss_cycle_raw = prod_tcn.bce_with_logits(
-                    logits_cycle,
-                    y_cycle,
-                    pos_weight=self.pos_w_cycle_t if float(self.state.pos_weight_cycle) != 1.0 else None,
-                    reduction="none",
-                )
-                loss_cycle = prod_tcn.masked_mean(loss_cycle_raw, mask_cycle)
-                boundary_sum = boundary_sum + (loss_boundary * mask_count)
-            else:
-                y_se = torch.from_numpy(np.stack([stream.y_start, stream.y_end], axis=-1)).unsqueeze(0).to(self.device)
-                logits_start_end = logits[:, :, 0:2]
-                logits_cycle = logits[:, :, 2]
-                loss_se_raw = prod_tcn._boundary_loss_with_logits(
-                    logits=logits_start_end,
-                    targets=y_se,
-                    pos_weight=self.pos_w_se_t,
-                    gamma=float(self.cfg.gamma),
-                    loss_name=str(self.state.boundary_loss_name),
-                )
-                loss_start = prod_tcn.masked_mean(loss_se_raw[:, :, 0], mask)
-                loss_end = prod_tcn.masked_mean(loss_se_raw[:, :, 1], mask)
-                loss_cycle_raw = prod_tcn.bce_with_logits(
-                    logits_cycle,
-                    y_cycle,
-                    pos_weight=self.pos_w_cycle_t if float(self.state.pos_weight_cycle) != 1.0 else None,
-                    reduction="none",
-                )
-                loss_cycle = prod_tcn.masked_mean(loss_cycle_raw, mask_cycle)
-                start_sum = start_sum + (loss_start * mask_count)
-                end_sum = end_sum + (loss_end * mask_count)
-
-            logits_class = logits[
-                :, :, self.state.class_offset : self.state.class_offset + self.state.num_class_logits
-            ]
-            loss_class = prod_tcn._masked_multiclass_ce(
-                logits=logits_class,
-                targets=y_class,
-                mask=mask_class,
-                class_weights=self.state.class_weights_t,
-            )
-            class_sum = class_sum + (loss_class * class_count)
-
-            loss_phase = logits.new_tensor(0.0)
-            if use_phase_head and phase_weight > 0.0:
-                y_phase = torch.from_numpy(stream.y_phase).unsqueeze(0).to(self.device)
-                logits_phase = logits[:, :, self.state.phase_offset : self.state.phase_offset + 2]
-                loss_phase = prod_tcn._phase_loss_masked(
-                    pred_phase_logits=logits_phase,
-                    target_phase=y_phase,
-                    mask_phase=phase_mask,
-                    loss_name=str(self.cfg.phase_loss),
-                    huber_delta=float(self.cfg.phase_huber_delta),
-                )
-                phase_sum = phase_sum + (loss_phase * phase_count)
-
-            loss_cyclece = logits.new_tensor(0.0)
-            if cyclece_weight > 0.0 and stream.mapped_cycles_idx:
-                loss_cyclece = prod_tcn._cycle_ce_loss(
-                    logits=logits.squeeze(0)[:, : self.state.base_heads],
-                    mapped_cycles_idx=stream.mapped_cycles_idx,
-                    combine=bool(combine),
-                    tau=float(self.cfg.cyclece_tau),
-                    radius=int(self.cfg.cyclece_radius),
-                )
-                cyclece_sum = cyclece_sum + loss_cyclece
-                cyclece_count = cyclece_count + torch.tensor(1.0, device=self.device)
-
-            total_mask = total_mask + mask_count
-            total_cycle_T = total_cycle_T + cycle_count
-            total_class_T = total_class_T + class_count
-            total_phase_T = total_phase_T + phase_count
-            cycle_sum = cycle_sum + (loss_cycle * cycle_count)
-            total_T = total_T + t_count
-
-            with torch.no_grad():
-                boundary_probs = torch.sigmoid(logits[:, :, : self.state.base_heads]).squeeze(0)
-                p_mean_sum = p_mean_sum + (boundary_probs.mean(dim=0) * t_count)
-                p_max = torch.maximum(p_max, boundary_probs.max(dim=0).values)
-                pred_cls = torch.argmax(logits_class.squeeze(0), dim=-1).detach().cpu().numpy()
-                conf_delta, _, _ = prod_tcn._compute_multiclass_metrics(
-                    y_true=self.state.stream_class_targets[idx],
-                    y_pred=pred_cls,
-                    mask=self.state.stream_class_masks[idx],
-                    num_classes=self.state.num_class_logits,
-                )
-                conf_epoch += conf_delta
-
-        loss_cycle_g = cycle_sum / torch.clamp(total_cycle_T, min=1.0)
-        loss_class_g = class_sum / torch.clamp(total_class_T, min=1.0)
-        loss_phase_g = (
-            phase_sum / torch.clamp(total_phase_T, min=1.0)
-            if use_phase_head and phase_weight > 0.0
-            else torch.tensor(0.0, device=self.device)
-        )
-        loss_cyclece_g = (
-            cyclece_sum / torch.clamp(cyclece_count, min=1.0)
-            if cyclece_weight > 0.0
-            else torch.tensor(0.0, device=self.device)
-        )
-        if combine:
-            loss_boundary_g = boundary_sum / torch.clamp(total_mask, min=1.0)
-            total_loss = (
-                loss_boundary_g
-                + loss_cycle_g
-                + (loss_class_g * class_weight_lambda)
-                + (loss_phase_g * phase_weight)
-                + (loss_cyclece_g * cyclece_weight)
-            )
-        else:
-            loss_start_g = start_sum / torch.clamp(total_mask, min=1.0)
-            loss_end_g = end_sum / torch.clamp(total_mask, min=1.0)
-            total_loss = (
-                loss_start_g
-                + loss_end_g
-                + loss_cycle_g
-                + (loss_class_g * class_weight_lambda)
-                + (loss_phase_g * phase_weight)
-                + (loss_cyclece_g * cyclece_weight)
-            )
-
-        total_loss.backward()
-        if float(self.cfg.grad_clip_norm or 0.0) > 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.cfg.grad_clip_norm))
-        self.optimizer.step()
-
-        per_class, macro_f1 = prod_tcn._per_class_metrics_from_confusion(conf_epoch)
-        row: Dict[str, float] = {
-            "epoch": float(self.epoch),
-            "loss": float(total_loss.item()),
-            "loss_cycle": float(loss_cycle_g.item()),
-            "loss_class": float(loss_class_g.item()),
-            "loss_phase": float(loss_phase_g.item()),
-            "loss_cyclece": float(loss_cyclece_g.item()),
-            "class_macro_f1": float(macro_f1),
-        }
-        if combine:
-            row["loss_boundary"] = float(loss_boundary_g.item())
-        else:
-            row["loss_start"] = float(loss_start_g.item())
-            row["loss_end"] = float(loss_end_g.item())
-        p_means = (p_mean_sum / torch.clamp(total_T, min=1.0)).detach().cpu().numpy().tolist()
-        p_max_vals = p_max.detach().cpu().numpy().tolist()
-        for idx, head_name in enumerate(_tcn_heads(self.state.base_heads, self.state.combine)):
-            row[f"p_mean_{head_name}"] = float(p_means[idx])
-            row[f"p_max_{head_name}"] = float(p_max_vals[idx])
-        self.history.append(row)
-        self.epoch += 1
-        LOGGER.info(
-            "TCN space=%s epoch=%d loss=%.4f pair_heads=%s macro_f1=%.4f trainable_params_M=%.3f",
-            self.spec.name,
-            self.epoch,
-            row["loss"],
-            list(_tcn_heads(self.state.base_heads, self.state.combine)),
-            row["class_macro_f1"],
-            _count_trainable_params(self.model) / 1e6,
-        )
-        return row
-
-    def _predict_pairs_for_record(self, record: SegmentRecord) -> List[EventPair]:
-        payload = load_segment_arrays(record, representation="pooled_z0", use_eval_span=True)
-        logits = prod_tcn._predict_full(
-            self.model,
-            payload["pooled_z0"],
-            left_ctx=int(self.state.left_ctx),
-            chunk_len=0,
-            device=self.device,
-        )
-        probs = 1.0 / (1.0 + np.exp(-logits[:, : self.state.base_heads]))
-        return decode_event_pairs(
-            probs,
-            payload["timestamps_ms"],
-            heads=_tcn_heads(self.state.base_heads, self.state.combine),
-        )
-
-    def evaluate(self) -> Dict[str, float]:
-        self.model.eval()
-        predictions = {
-            record.segment_id: self._predict_pairs_for_record(record)
-            for record in self.spec.split_plan.val_eval_records
-        }
-        return evaluate_predictions(predictions, records=self.spec.split_plan.val_eval_records)
-
-    def build_checkpoint_payload(self) -> Dict[str, Any]:
-        return {
-            "seq_model": prod_tcn._normalize_seq_model(str(self.cfg.seq_model)),
-            "model_state": {key: value.detach().cpu() for key, value in self.model.state_dict().items()},
-            "model_cfg": dict(self.state.model_cfg_dict),
-            "train_cfg": asdict(self.cfg),
-            "temporal_structure_mode": str(self.spec.cfg.temporal_structure_mode),
-            "effective_losses": {
-                "boundary": True,
-                "class": float(self.cfg.class_loss_weight) > 0.0,
-                "cycle": True,
-                "phase": bool(self.cfg.use_phase_head) and float(self.cfg.phase_loss_weight) > 0.0,
-                "ranking": False,
-                "cyclece": float(self.cfg.cyclece_loss_weight) > 0.0,
-            },
-            "heads": prod_tcn._build_output_heads(
-                combine=bool(self.state.combine),
-                use_phase_head=bool(self.state.use_phase_head),
-                class_index_to_label_id=self.state.class_index_to_label_id,
-                class_index_to_label_name=self.state.class_index_to_label_name,
-            ),
-            "streams": [
-                {
-                    "name": stream.name,
-                    "embeddings_path": str(stream.embeddings_path),
-                    "labels_path": str(stream.labels_path),
-                    "supervised_mode": str(stream.supervised_mode),
-                    "mapping_stats": stream.mapping_stats,
-                    "cycle_pos_frac": float(stream.cycle_pos_frac),
-                    "cycle_supervised_frac": float(stream.cycle_supervised_frac),
-                    "valid_start_idx_full": int(stream.valid_start_idx_full),
-                    "valid_end_idx_full": int(stream.valid_end_idx_full),
-                    "full_len": int(stream.full_len),
-                }
-                for stream in self.state.streams
-            ],
-            "multiclass_head": {
-                "enabled": float(self.cfg.class_loss_weight) > 0.0,
-                "class_offset": int(self.state.class_offset),
-                "num_classes": int(self.state.num_class_logits),
-                "class_index_to_label_id": [int(item) for item in self.state.class_index_to_label_id],
-                "class_index_to_label_name": [str(item) for item in self.state.class_index_to_label_name],
-                "label_id_to_label_name": {
-                    str(label_id): str(label_name)
-                    for label_id, label_name in self.state.global_action_label_name_by_id.items()
-                    if str(label_name).strip()
-                },
-                "action_label_ids": [int(item) for item in self.state.global_action_label_ids],
-                "loss_weight": float(self.cfg.class_loss_weight),
-                "class_weights": [float(item) for item in self.state.class_weights_np.tolist()],
-            },
-            "pos_weight_cycle": float(self.state.pos_weight_cycle),
-            "pos_weight_start_end": float(self.state.pos_weight_start_end),
-        }
-
-    def save_checkpoint(self, output_dir: Path) -> Path:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        payload = self.build_checkpoint_payload()
-        payload["boundary_arch_version"] = prod_tcn.infer_boundary_arch_version(
-            model_cfg=payload["model_cfg"],
-            model_state=payload["model_state"],
-        )
-        path = output_dir / "boundary_model.pt"
-        torch.save(payload, path)
-        (output_dir / "train_metrics.json").write_text(
-            json.dumps({"history": self.history}, indent=2),
-            encoding="utf-8",
-        )
-        return path
 
 
 def _resolve_left_context_from_tcn_payload(payload: Dict[str, Any]) -> int:
@@ -1188,79 +1392,38 @@ def _resolve_left_context_from_tcn_payload(payload: Dict[str, Any]) -> int:
     return 0
 
 
-class ProbeTrainer:
+class HistoricalProbeTrainer:
     def __init__(
         self,
         spec: SpaceSpec,
         *,
         device: torch.device,
         tcn_checkpoint: Path,
-        initial_pooler_path: Path,
+        pooler_path: Path,
+        encoder_model: str,
+        encoder_checkpoint: Path,
+        config: prod_probe.ProbePhase1Config,
     ) -> None:
         self.spec = spec
         self.device = device
-        self.output_dir = spec.output_dir / "probe"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.config = prod_probe.ProbePhase1Config(
-            epochs=int(spec.cfg.train.stage1_epochs),
-            probe_lr=1.5e-5,
-            weight_decay=float(spec.cfg.train.weight_decay),
-            grad_clip_norm=float(spec.cfg.train.grad_clip_norm),
-            chunk_len=32 if str(spec.encoder_model).lower() == "large" else 256,
-            chunks_per_stream=int(spec.cfg.train.stage1_chunks_per_stream),
-            neg_chunk_fraction=float(spec.cfg.train.stage1_neg_chunk_fraction),
-            stage1_last_block_epoch=0,
-            stage1_all_epoch=999,
-            tcn_tune_mode=str(spec.cfg.train.stage1_tcn_tune_mode),
-            tcn_last_blocks=int(spec.cfg.train.stage1_tcn_last_blocks),
-            tcn_lr=float(spec.cfg.train.stage1_tcn_lr),
-            tcn_weight_decay=float(spec.cfg.train.stage1_tcn_weight_decay),
-            stream_sampling_mode=str(spec.cfg.train.stage1_stream_sampling_mode),
-            stream_sampling_power=float(spec.cfg.train.stage1_stream_sampling_power),
-            stream_sampling_min_weight=float(spec.cfg.train.stage1_stream_sampling_min_weight),
-            cyclece_weight=float(spec.cfg.train.stage1_cyclece_weight),
-            cyclece_tau=float(spec.cfg.train.cyclece_tau),
-            cyclece_radius=int(spec.cfg.train.cyclece_radius),
-            smooth_weight=0.07,
-            distill_weight=float(spec.cfg.train.stage1_distill_weight),
-            class_weight=float(spec.cfg.train.stage1_class_weight),
-            fail_if_best_epoch_zero=bool(spec.cfg.train.stage1_fail_if_best_epoch_zero),
-            boundary_index_mode=str(spec.cfg.train.boundary_index_mode),
-            temporal_structure_mode=str(spec.cfg.temporal_structure_mode),
-            seed=int(spec.cfg.train.seed),
-        )
+        self.config = config
+        self.current_pooler_path = Path(pooler_path).expanduser().resolve()
+        self.current_tcn_path = Path(tcn_checkpoint).expanduser().resolve()
         self.history: List[Dict[str, float]] = []
         self.epoch = 0
-        self.current_pooler_path = Path(initial_pooler_path).expanduser().resolve()
-        self.current_tcn_path = Path(tcn_checkpoint).expanduser().resolve()
         self._feature_cache: Dict[Path, Any] = {}
 
         self.tcn_payload = torch.load(self.current_tcn_path, map_location="cpu")
         if not isinstance(self.tcn_payload, dict):
             raise RuntimeError(f"Invalid boundary checkpoint payload: {self.current_tcn_path}")
-        self.heads = self.tcn_payload.get("heads") if isinstance(self.tcn_payload.get("heads"), (list, tuple)) else []
-        self.heads_n = [str(head).strip().lower() for head in self.heads]
-        self.combine = "boundary" in self.heads_n and "start" not in self.heads_n and "end" not in self.heads_n
-        self.phase_head_indices = prod_probe._resolve_phase_head_indices(self.heads)
-        self.use_phase_head = self.phase_head_indices is not None
-        multiclass_head = (
-            self.tcn_payload.get("multiclass_head")
-            if isinstance(self.tcn_payload.get("multiclass_head"), dict)
-            else {}
-        )
-        self.class_head_info = prod_probe._resolve_class_head_info(self.heads, multiclass_head)
-        self.class_weights_t = None
-        if self.class_head_info is not None and self.class_head_info.get("class_weights") is not None:
-            self.class_weights_t = torch.from_numpy(self.class_head_info["class_weights"]).to(self.device)
-
         self.streams = [
             prod_probe._prepare_stream(
                 name=str(record.segment_id),
                 token_npz=Path(record.feature_path),
                 labels_path=Path(record.label_path),
-                ignore_radius=int(self.spec.cfg.train.ignore_radius),
-                smooth_sigma=float(self.spec.cfg.train.smooth_sigma),
-                boundary_index_mode=str(self.spec.cfg.train.boundary_index_mode),
+                ignore_radius=1,
+                smooth_sigma=0.0,
+                boundary_index_mode="ordered_nearest",
                 feature_cache=self._feature_cache,
             )
             for record in self.spec.split_plan.train_records
@@ -1273,7 +1436,7 @@ class ProbeTrainer:
                     "_Cfg",
                     (),
                     {
-                        "pos_weight_cycle": None,
+                        "pos_weight_cycle": 1.0,
                         "cycle_weight_trigger_low": 0.35,
                         "cycle_weight_trigger_high": 0.65,
                         "cycle_weight_min": 1.0,
@@ -1286,19 +1449,14 @@ class ProbeTrainer:
         self.boundary_loss_name = str(train_cfg_ckpt.get("boundary_loss", "focal")).lower()
         self.gamma = float(train_cfg_ckpt.get("gamma", 2.0))
         self.pos_weight_start_end = float(train_cfg_ckpt.get("pos_weight_start_end", 10.0))
-        self.phase_loss_name = str(train_cfg_ckpt.get("phase_loss", "mse")).lower()
-        self.phase_huber_delta = float(train_cfg_ckpt.get("phase_huber_delta", 0.25))
-        self.phase_loss_weight = float(train_cfg_ckpt.get("phase_loss_weight", 0.15))
-        self.ignore_radius = int(train_cfg_ckpt.get("ignore_radius", 1))
-        self.smooth_sigma = float(train_cfg_ckpt.get("smooth_sigma", 0.0))
         self.left_ctx = int(_resolve_left_context_from_tcn_payload(self.tcn_payload))
 
         self.probe = _build_probe_with_vendor_classifier(
             int(self.streams[0].tokens.shape[-1]),
             self.device,
             self.current_pooler_path,
-            encoder_model=str(self.spec.encoder_model),
-            encoder_checkpoint=str(self.spec.encoder_checkpoint),
+            encoder_model=str(encoder_model),
+            encoder_checkpoint=str(encoder_checkpoint),
         )
         self.tcn = prod_tcn.load_boundary_checkpoint(
             self.current_tcn_path,
@@ -1322,7 +1480,25 @@ class ProbeTrainer:
         self.autocast_dtype = torch.bfloat16
         self.pos_w_se_t = torch.tensor(float(self.pos_weight_start_end), device=self.device)
         self.pos_w_cycle_t = torch.tensor(float(self.pos_weight_cycle), device=self.device)
-        self.class_weight = float(max(0.0, self.config.class_weight))
+
+
+    def clone_probe_state(self) -> Dict[str, torch.Tensor]:
+        return _clone_state_dict(self.probe)
+
+
+    def clone_tcn_state(self) -> Dict[str, torch.Tensor]:
+        return _clone_state_dict(self.tcn)
+
+
+    def restore_states(
+        self,
+        *,
+        probe_state: Dict[str, torch.Tensor],
+        tcn_state: Dict[str, torch.Tensor],
+    ) -> None:
+        _restore_state_dict(self.probe, probe_state)
+        _restore_state_dict(self.tcn, tcn_state)
+
 
     def train_epoch(self) -> Dict[str, float]:
         if int(self.epoch) < int(self.config.stage1_last_block_epoch):
@@ -1338,7 +1514,6 @@ class ProbeTrainer:
             last_blocks=int(self.config.tcn_last_blocks),
         )
         prod_probe._set_aux_sequence_trainable(self.tcn, enabled=True)
-
         self.probe.train()
         prod_probe._set_sequence_train_mode(self.tcn)
 
@@ -1357,14 +1532,13 @@ class ProbeTrainer:
             "loss_start": 0.0,
             "loss_end": 0.0,
             "loss_cycle": 0.0,
-            "loss_class": 0.0,
-            "loss_phase": 0.0,
             "loss_cyclece": 0.0,
             "loss_smooth": 0.0,
             "loss_distill": 0.0,
         }
         steps = 0
         use_frozen_tcn_context = not prod_probe._has_trainable_tcn_branch(self.tcn)
+
         while step_queue:
             stream_idx = int(step_queue.pop())
             stream = self.streams[stream_idx]
@@ -1387,10 +1561,6 @@ class ProbeTrainer:
             y_cycle = torch.from_numpy(stream.y_cycle[start:end]).to(device=self.device)
             mask_cycle = torch.from_numpy(stream.mask_cycle[start:end]).to(device=self.device)
             mask_start_end = torch.from_numpy(stream.mask_start_end[start:end]).to(device=self.device)
-            raw_class_ids = torch.from_numpy(stream.y_class_label_id[start:end]).to(
-                device=self.device, dtype=torch.long
-            )
-            mask_class = torch.from_numpy(stream.mask_class[start:end]).to(device=self.device)
             z0 = _torch_from_numpy_safe(stream.z0[start:end], device=self.device)
 
             self.optimizer.zero_grad(set_to_none=True)
@@ -1440,41 +1610,6 @@ class ProbeTrainer:
             )
             loss_cycle = prod_tcn.masked_mean(loss_cycle_raw, mask_cycle)
 
-            loss_class = logits.new_tensor(0.0)
-            if self.class_head_info is not None and self.class_weight > 0.0:
-                class_targets = torch.zeros_like(raw_class_ids)
-                label_id_to_class_index = self.class_head_info["label_id_to_class_index"]
-                for label_id, class_index in label_id_to_class_index.items():
-                    class_targets = torch.where(
-                        raw_class_ids == int(label_id),
-                        torch.full_like(raw_class_ids, int(class_index)),
-                        class_targets,
-                    )
-                logits_class = logits[
-                    :, int(self.class_head_info["class_start"]) : int(self.class_head_info["class_stop"])
-                ]
-                loss_class = prod_tcn._masked_multiclass_ce(
-                    logits=logits_class,
-                    targets=class_targets,
-                    mask=mask_class,
-                    class_weights=self.class_weights_t,
-                )
-
-            loss_phase = logits.new_tensor(0.0)
-            if self.use_phase_head and self.phase_loss_weight > 0.0 and self.phase_head_indices is not None:
-                phase_sin_idx = int(self.phase_head_indices[0])
-                phase_cos_idx = int(self.phase_head_indices[1])
-                y_phase = torch.from_numpy(stream.y_phase[start:end]).to(device=self.device)
-                mask_phase = torch.from_numpy(stream.mask_phase[start:end]).to(device=self.device)
-                logits_phase = torch.stack([logits[:, phase_sin_idx], logits[:, phase_cos_idx]], dim=-1)
-                loss_phase = prod_tcn._phase_loss_masked(
-                    pred_phase_logits=logits_phase,
-                    target_phase=y_phase,
-                    mask_phase=mask_phase,
-                    loss_name=str(self.phase_loss_name),
-                    huber_delta=float(self.phase_huber_delta),
-                )
-
             local_cycles = prod_probe._local_cycles_in_chunk(stream.mapped_cycles_idx, start=start, end=end)
             loss_cyclece = logits.new_tensor(0.0)
             if float(self.config.cyclece_weight) > 0.0 and local_cycles:
@@ -1497,8 +1632,6 @@ class ProbeTrainer:
             loss = (
                 loss_boundary
                 + loss_cycle
-                + (loss_class * float(self.class_weight))
-                + (loss_phase * float(self.phase_loss_weight))
                 + (loss_cyclece * float(self.config.cyclece_weight))
                 + (loss_smooth * float(self.config.smooth_weight))
                 + (loss_distill * float(self.config.distill_weight))
@@ -1507,7 +1640,11 @@ class ProbeTrainer:
                 raise RuntimeError(f"Non-finite loss detected in probe phase1 space={self.spec.name}")
             loss.backward()
             if float(self.config.grad_clip_norm) > 0:
-                params = [param for param in list(self.probe.parameters()) + list(self.tcn.parameters()) if param.requires_grad]
+                params = [
+                    param
+                    for param in list(self.probe.parameters()) + list(self.tcn.parameters())
+                    if param.requires_grad
+                ]
                 if params:
                     torch.nn.utils.clip_grad_norm_(params, float(self.config.grad_clip_norm))
             self.optimizer.step()
@@ -1517,8 +1654,6 @@ class ProbeTrainer:
             totals["loss_start"] += float(loss_start.item())
             totals["loss_end"] += float(loss_end.item())
             totals["loss_cycle"] += float(loss_cycle.item())
-            totals["loss_class"] += float(loss_class.item())
-            totals["loss_phase"] += float(loss_phase.item())
             totals["loss_cyclece"] += float(loss_cyclece.item())
             totals["loss_smooth"] += float(loss_smooth.item())
             totals["loss_distill"] += float(loss_distill.item())
@@ -1533,8 +1668,7 @@ class ProbeTrainer:
         self.history.append(row)
         self.epoch += 1
         LOGGER.info(
-            "Probe space=%s epoch=%d loss=%.4f probe_mode=%s trainable_probe_M=%.3f",
-            self.spec.name,
+            "Probe epoch=%d loss=%.4f probe_mode=%s trainable_probe_M=%.3f",
             self.epoch,
             row["loss"],
             probe_mode,
@@ -1542,9 +1676,10 @@ class ProbeTrainer:
         )
         return row
 
+
     def _encode_tokens_full(self, tokens: np.ndarray) -> np.ndarray:
         outputs: List[np.ndarray] = []
-        chunk = int(max(1, DEFAULT_PROBE_EVAL_TOKEN_CHUNK))
+        chunk = int(max(1, EVAL_TOKEN_CHUNK))
         self.probe.eval()
         autocast_ctx = _autocast_context(enabled=bool(self.use_autocast), dtype=self.autocast_dtype)
         for start in range(0, int(tokens.shape[0]), chunk):
@@ -1560,6 +1695,7 @@ class ProbeTrainer:
             outputs.append(pooled.detach().float().cpu().numpy().astype(np.float32, copy=False))
         return np.concatenate(outputs, axis=0)
 
+
     def _predict_pairs_for_record(self, record: SegmentRecord) -> List[EventPair]:
         payload = load_segment_arrays(record, representation="both", use_eval_span=True)
         pooled = self._encode_tokens_full(payload["tokens"])
@@ -1573,6 +1709,7 @@ class ProbeTrainer:
         probs = 1.0 / (1.0 + np.exp(-logits[:, :3]))
         return decode_event_pairs(probs, payload["timestamps_ms"], heads=("start", "end", "cycle"))
 
+
     def evaluate(self) -> Dict[str, float]:
         self.probe.eval()
         self.tcn.eval()
@@ -1581,6 +1718,7 @@ class ProbeTrainer:
             for record in self.spec.split_plan.val_eval_records
         }
         return evaluate_predictions(predictions, records=self.spec.split_plan.val_eval_records)
+
 
     def save_checkpoints(self, output_dir: Path) -> Tuple[Path, Path]:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1605,12 +1743,12 @@ class ProbeTrainer:
         tcn_payload["model_state"] = {key: value.detach().cpu() for key, value in self.tcn.state_dict().items()}
         tcn_payload["probe_finetune"] = {
             "stage": "probe_phase1",
-            "temporal_structure_mode": str(self.spec.cfg.temporal_structure_mode),
+            "temporal_structure_mode": "cyclic",
             "effective_losses": {
                 "boundary": True,
-                "class": bool(self.class_head_info is not None and self.class_weight > 0.0),
+                "class": False,
                 "cycle": True,
-                "phase": bool(self.use_phase_head) and float(self.phase_loss_weight) > 0.0,
+                "phase": False,
                 "ranking": False,
                 "cyclece": float(self.config.cyclece_weight) > 0.0,
                 "smooth": float(self.config.smooth_weight) > 0.0,
@@ -1621,7 +1759,7 @@ class ProbeTrainer:
             "cyclece_weight": float(self.config.cyclece_weight),
             "smooth_weight": float(self.config.smooth_weight),
             "distill_weight": float(self.config.distill_weight),
-            "class_weight": float(self.class_weight),
+            "class_weight": 0.0,
         }
         tcn_ckpt = output_dir / "boundary_model.pt"
         torch.save(tcn_payload, tcn_ckpt)
@@ -1629,67 +1767,168 @@ class ProbeTrainer:
             json.dumps({"history": self.history}, indent=2),
             encoding="utf-8",
         )
-        self.current_pooler_path = probe_ckpt
-        self.current_tcn_path = tcn_ckpt
         return probe_ckpt, tcn_ckpt
 
 
-def _evaluate_trainers(trainers: Mapping[str, Any]) -> EvalBundle:
-    metrics_by_space = {name: trainer.evaluate() for name, trainer in trainers.items()}
-    return _bundle_metrics(metrics_by_space)
-
-
-def _copy_file(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    data = src.read_bytes()
-    dst.write_bytes(data)
-
-
-def _save_best_bundle(
-    *,
-    stage_name: str,
-    output_root: Path,
-    tcn_trainers: Optional[Mapping[str, TCNTrainer]] = None,
-    probe_trainers: Optional[Mapping[str, ProbeTrainer]] = None,
-    eval_bundle: EvalBundle,
-) -> None:
-    stage_root = output_root / stage_name
-    stage_root.mkdir(parents=True, exist_ok=True)
-    if tcn_trainers is not None:
-        for name, trainer in tcn_trainers.items():
-            trainer.save_checkpoint(stage_root / SPACE_KEY_BY_NAME[name])
-    if probe_trainers is not None:
-        for name, trainer in probe_trainers.items():
-            trainer.save_checkpoints(stage_root / SPACE_KEY_BY_NAME[name])
-    (stage_root / "metrics.json").write_text(
-        json.dumps(
-            {
-                "primary_metric": float(eval_bundle.primary_metric),
-                "mean_pair_f1": float(eval_bundle.mean_pair_f1),
-                "mean_count_mae": float(eval_bundle.mean_count_mae),
-                "mean_start_mae_ms": float(eval_bundle.mean_start_mae_ms),
-                "mean_end_mae_ms": float(eval_bundle.mean_end_mae_ms),
-                "metrics_by_space": eval_bundle.metrics_by_space,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+def _historical_phase1_config(*, seed: int, chunk_len: int) -> prod_probe.ProbePhase1Config:
+    return prod_probe.ProbePhase1Config(
+        epochs=20,
+        probe_lr=1.5e-5,
+        weight_decay=1e-4,
+        grad_clip_norm=1.0,
+        chunk_len=int(chunk_len),
+        chunks_per_stream=12,
+        neg_chunk_fraction=0.25,
+        stage1_last_block_epoch=0,
+        stage1_all_epoch=999,
+        tcn_tune_mode="frozen",
+        tcn_last_blocks=1,
+        tcn_lr=5e-5,
+        tcn_weight_decay=1e-4,
+        stream_sampling_mode="uniform",
+        stream_sampling_power=0.5,
+        stream_sampling_min_weight=1.0,
+        cyclece_weight=1.0,
+        cyclece_tau=0.7,
+        cyclece_radius=1,
+        smooth_weight=0.05,
+        distill_weight=0.10,
+        class_weight=0.0,
+        fail_if_best_epoch_zero=False,
+        boundary_index_mode="ordered_nearest",
+        temporal_structure_mode="cyclic",
+        seed=int(seed),
     )
 
 
-def _print_split_summary(space: SpaceSpec) -> None:
-    singleton_cameras = sum(1 for count in space.split_plan.camera_total_counts.values() if int(count) == 1)
+def _is_cuda_oom(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "cuda out of memory" in msg or "outofmemoryerror" in type(exc).__name__.lower()
+
+
+def _run_historical_phase1(
+    *,
+    spec: SpaceSpec,
+    stage0_result: Stage0Result,
+    output_dir: Path,
+    device: torch.device,
+    budget_seconds: float,
+) -> Phase1Result:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chunk_len = 32 if str(spec.encoder_model).lower() == "large" else 256
+    while True:
+        config = _historical_phase1_config(seed=SEED, chunk_len=chunk_len)
+        LOGGER.info(
+            "Phase-1 historical: epochs=%d chunk_len=%d tcn_tune_mode=%s stream_sampling=%s budget=%.1fs",
+            int(config.epochs),
+            int(config.chunk_len),
+            str(config.tcn_tune_mode),
+            str(config.stream_sampling_mode),
+            float(budget_seconds),
+        )
+        trainer = HistoricalProbeTrainer(
+            spec,
+            device=device,
+            tcn_checkpoint=stage0_result.checkpoint_path,
+            pooler_path=spec.pooler_path,
+            encoder_model=str(spec.encoder_model),
+            encoder_checkpoint=spec.encoder_checkpoint,
+            config=config,
+        )
+        best_loss = float("inf")
+        best_epoch = -1
+        best_probe_state: Optional[Dict[str, torch.Tensor]] = None
+        best_tcn_state: Optional[Dict[str, torch.Tensor]] = None
+        deadline = time.monotonic() + float(budget_seconds)
+        start_t = time.time()
+        try:
+            for _ in range(int(config.epochs)):
+                if trainer.epoch > 0 and time.monotonic() >= deadline:
+                    break
+                row = trainer.train_epoch()
+                if float(row["loss"]) < float(best_loss):
+                    best_loss = float(row["loss"])
+                    best_epoch = int(trainer.epoch - 1)
+                    best_probe_state = trainer.clone_probe_state()
+                    best_tcn_state = trainer.clone_tcn_state()
+                if time.monotonic() >= deadline:
+                    break
+        except Exception as exc:
+            if not _is_cuda_oom(exc):
+                raise
+            next_chunk_len = max(int(PHASE1_MIN_CHUNK), int(chunk_len // 2))
+            if next_chunk_len >= int(chunk_len):
+                raise
+            LOGGER.warning(
+                "Historical phase-1 hit CUDA OOM at chunk_len=%d; retrying with chunk_len=%d",
+                int(chunk_len),
+                int(next_chunk_len),
+            )
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            chunk_len = int(next_chunk_len)
+            continue
+
+        if best_probe_state is None or best_tcn_state is None:
+            best_probe_state = trainer.clone_probe_state()
+            best_tcn_state = trainer.clone_tcn_state()
+            best_epoch = int(max(0, trainer.epoch - 1))
+            best_loss = float(trainer.history[-1]["loss"]) if trainer.history else float("inf")
+
+        trainer.restore_states(probe_state=best_probe_state, tcn_state=best_tcn_state)
+        metrics = trainer.evaluate()
+        probe_checkpoint, tcn_checkpoint = trainer.save_checkpoints(output_dir)
+        history_path = output_dir / "history.json"
+        metrics_path = output_dir / "metrics.json"
+        config_snapshot_path = output_dir / "config_snapshot.json"
+        _write_json(history_path, {"history": trainer.history})
+        _write_json(
+            metrics_path,
+            {
+                "best_epoch": int(best_epoch),
+                "best_loss": float(best_loss),
+                "effective_chunk_len": int(chunk_len),
+                "metrics": metrics,
+                "timing_mae_ms": float(_compute_timing_mae_ms(metrics)),
+            },
+        )
+        _write_json(
+            config_snapshot_path,
+            {
+                "profile_name": "historical",
+                "effective_config": asdict(config),
+                "effective_chunk_len": int(chunk_len),
+                "time_budget_seconds": float(budget_seconds),
+            },
+        )
+        return Phase1Result(
+            probe_checkpoint=probe_checkpoint,
+            tcn_checkpoint=tcn_checkpoint,
+            metrics_path=metrics_path,
+            config_snapshot_path=config_snapshot_path,
+            history_path=history_path,
+            metrics=metrics,
+            best_epoch=int(best_epoch),
+            best_loss=float(best_loss),
+            effective_chunk_len=int(chunk_len),
+            elapsed_seconds=float(time.time() - start_t),
+        )
+
+
+def _print_split_summary(spec: SpaceSpec) -> None:
+    singleton_cameras = sum(1 for count in spec.split_plan.camera_total_counts.values() if int(count) == 1)
     planned_lines = [
-        f"{camera_id}:{space.split_plan.camera_val_counts[camera_id]}/{space.split_plan.camera_total_counts[camera_id]}"
-        for camera_id in sorted(space.split_plan.camera_total_counts)
+        f"{camera_id}:{spec.split_plan.camera_val_counts[camera_id]}/{spec.split_plan.camera_total_counts[camera_id]}"
+        for camera_id in sorted(spec.split_plan.camera_total_counts)
     ]
     print(
-        f"[split] {space.name} | policy={space.split_plan.split_policy} "
-        f"train_videos={len(space.split_plan.train_videos)} "
-        f"val_videos={len(space.split_plan.val_videos)} target_val_videos={space.split_plan.target_val_videos:.1f} "
+        f"[split] {spec.name} | policy={spec.split_plan.split_policy} "
+        f"train_videos={len(spec.split_plan.train_videos)} "
+        f"val_videos={len(spec.split_plan.val_videos)} "
+        f"target_val_videos={spec.split_plan.target_val_videos:.1f} "
         f"singleton_cameras={singleton_cameras}"
     )
-    print(f"[split] {space.name} camera_val_counts={' '.join(planned_lines)}")
+    print(f"[split] {spec.name} camera_val_counts={' '.join(planned_lines)}")
 
 
 def main() -> int:
@@ -1706,139 +1945,94 @@ def main() -> int:
     tcn_stage_seconds, probe_stage_seconds = resolve_stage_budget_seconds(total_budget_seconds)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    output_root = _resolve_output_root() / f"minda_experiment_{stamp}"
+    output_root = _resolve_output_root() / f"minda_subassembly_replay_{stamp}"
     output_root.mkdir(parents=True, exist_ok=True)
+    spec = _build_space_spec(output_root)
+    _print_split_summary(spec)
 
-    spaces = {name: _build_space_spec(name, output_root) for name in SPACE_ORDER}
-    for space in spaces.values():
-        _print_split_summary(space)
-
-    print(f"[task] boundary_pairs_dual_space")
+    print(f"[task] {TASK_MODE}")
     print(f"[workspace_root] {WORKSPACE_ROOT}")
     print(f"[device] {device}")
     print(f"[output_root] {output_root}")
+    print(f"[source_run_dir] {spec.source_run_dir}")
+    print(f"[cache_root] {spec.cache_root}")
 
     start_time = time.time()
     peak_vram_mb = 0.0
-
-    # Stage 1: independent TCNs in lockstep.
-    tcn_trainers = {name: TCNTrainer(spec, device=device) for name, spec in spaces.items()}
-    print(
-        "[stage] tcn | duration="
-        f"{tcn_stage_seconds:.1f}s | trainable_params_M="
-        + " ".join(
-            f"{SPACE_KEY_BY_NAME[name]}:{_count_trainable_params(trainer.model) / 1e6:.3f}"
-            for name, trainer in tcn_trainers.items()
-        )
-    )
-    TCN_EVAL_EVERY = 10
-    best_tcn_eval: Optional[EvalBundle] = None
-    tcn_deadline = time.monotonic() + float(tcn_stage_seconds)
-    tcn_round = 0
-    while True:
-        tcn_round += 1
-        for name in SPACE_ORDER:
-            trainer = tcn_trainers[name]
-            trainer.train_epoch()
-            peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
-        TCN_MAX_ROUNDS = 80
-        past_deadline = time.monotonic() >= tcn_deadline or tcn_round >= TCN_MAX_ROUNDS
-        if tcn_round % TCN_EVAL_EVERY == 0 or past_deadline:
-            eval_bundle = _evaluate_trainers(tcn_trainers)
-            print(
-                f"[tcn] round={tcn_round} | primary={eval_bundle.primary_metric:.6f} "
-                f"mean_pair_f1={eval_bundle.mean_pair_f1:.6f} mean_count_mae={eval_bundle.mean_count_mae:.6f}"
-            )
-            if _should_replace_eval(best_tcn_eval, eval_bundle):
-                best_tcn_eval = eval_bundle
-                _save_best_bundle(
-                    stage_name="tcn_best",
-                    output_root=output_root,
-                    tcn_trainers=tcn_trainers,
-                    eval_bundle=eval_bundle,
-                )
-        if past_deadline:
-            break
-
-    if best_tcn_eval is None:
-        raise RuntimeError("No TCN evaluation bundle was produced.")
-
-    tcn_best_root = output_root / "tcn_best"
-    probe_trainers = {}
-    for name, spec in spaces.items():
-        probe_trainers[name] = ProbeTrainer(
-            spec,
-            device=device,
-            tcn_checkpoint=tcn_best_root / SPACE_KEY_BY_NAME[name] / "boundary_model.pt",
-            initial_pooler_path=spec.initial_pooler_path,
-        )
+    stage0_cfg = Stage0Config(seed=SEED)
 
     print(
-        "[stage] probe_phase1 | duration="
-        f"{probe_stage_seconds:.1f}s | trainable_params_M="
-        + " ".join(
-            f"{SPACE_KEY_BY_NAME[name]}:{_count_trainable_params(trainer.probe) / 1e6:.3f}"
-            for name, trainer in probe_trainers.items()
-        )
+        f"[stage] tcn | duration={tcn_stage_seconds:.1f}s "
+        f"| trainable_params_M={_count_trainable_params(Stage0BoundaryModel(input_dim=int(spec.split_plan.train_records[0].embedding_dim), cfg=stage0_cfg)) / 1e6:.3f}"
     )
-    best_probe_eval: Optional[EvalBundle] = None
-    tcn_elapsed = time.time() - start_time
-    remaining_budget = max(60.0, float(total_budget_seconds) - tcn_elapsed)
-    probe_deadline = time.monotonic() + remaining_budget
-    print(f"[probe] budget={remaining_budget:.1f}s (tcn used {tcn_elapsed:.1f}s)")
-    probe_round = 0
-    while True:
-        probe_round += 1
-        for name in SPACE_ORDER:
-            trainer = probe_trainers[name]
-            trainer.train_epoch()
-            peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
-        eval_bundle = _evaluate_trainers(probe_trainers)
-        print(
-            f"[probe] round={probe_round} | primary={eval_bundle.primary_metric:.6f} "
-            f"mean_pair_f1={eval_bundle.mean_pair_f1:.6f} mean_count_mae={eval_bundle.mean_count_mae:.6f}"
-        )
-        if _should_replace_eval(best_probe_eval, eval_bundle):
-            best_probe_eval = eval_bundle
-            _save_best_bundle(
-                stage_name="probe_best",
-                output_root=output_root,
-                probe_trainers=probe_trainers,
-                eval_bundle=eval_bundle,
-            )
-        if time.monotonic() >= probe_deadline:
-            break
+    stage0_result = _run_stage0(
+        spec=spec,
+        output_dir=output_root / "stage0_best",
+        cfg=stage0_cfg,
+        budget_seconds=tcn_stage_seconds,
+        device=device,
+    )
+    peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
+    print(
+        f"[tcn] best_epoch={stage0_result.best_epoch} source={stage0_result.best_source} "
+        f"pair_f1={stage0_result.metrics['val_pair_f1']:.6f} "
+        f"count_mae={stage0_result.metrics['val_count_mae']:.6f}"
+    )
 
-    if best_probe_eval is None:
-        raise RuntimeError("No probe evaluation bundle was produced.")
+    print("[stage] probe_phase1 | duration=" f"{probe_stage_seconds:.1f}s | profile=historical")
+    phase1_result = _run_historical_phase1(
+        spec=spec,
+        stage0_result=stage0_result,
+        output_dir=output_root / "phase1_historical",
+        device=device,
+        budget_seconds=probe_stage_seconds,
+    )
+    peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
+    print(
+        f"[probe] best_epoch={phase1_result.best_epoch} loss={phase1_result.best_loss:.6f} "
+        f"pair_f1={phase1_result.metrics['val_pair_f1']:.6f} "
+        f"count_mae={phase1_result.metrics['val_count_mae']:.6f} "
+        f"chunk_len={phase1_result.effective_chunk_len}"
+    )
 
     total_seconds = float(time.time() - start_time)
     summary = {
         "model_family": MODEL_FAMILY,
-        "task_mode": "boundary_pairs_dual_space",
+        "task_mode": TASK_MODE,
         "time_budget_seconds": float(total_budget_seconds),
         "tcn_stage_seconds": float(tcn_stage_seconds),
         "probe_stage_seconds": float(probe_stage_seconds),
         "total_seconds": float(total_seconds),
         "peak_vram_mb": float(peak_vram_mb),
-        "primary_metric": float(best_probe_eval.primary_metric),
-        "mean_pair_f1": float(best_probe_eval.mean_pair_f1),
-        "mean_count_mae": float(best_probe_eval.mean_count_mae),
-        "mean_start_mae_ms": float(best_probe_eval.mean_start_mae_ms),
-        "mean_end_mae_ms": float(best_probe_eval.mean_end_mae_ms),
-        "metrics_by_space": best_probe_eval.metrics_by_space,
-        "spaces": {
-            name: {
-                "source_run_dir": str(spec.source_run_dir),
-                "cache_root": str(spec.cache_root),
-                "split_policy": str(spec.split_plan.split_policy),
-                "train_segments": len(spec.split_plan.train_records),
-                "val_segments": len(spec.split_plan.val_records),
-                "val_eval_segments": len(spec.split_plan.val_eval_records),
-                "train_videos": len(spec.split_plan.train_videos),
-                "val_videos": len(spec.split_plan.val_videos),
-            }
-            for name, spec in spaces.items()
+        "cache_root": str(spec.cache_root),
+        "source_run_dir": str(spec.source_run_dir),
+        "split_policy": str(spec.split_plan.split_policy),
+        "train_segments": len(spec.split_plan.train_records),
+        "val_segments": len(spec.split_plan.val_records),
+        "val_eval_segments": len(spec.split_plan.val_eval_records),
+        "train_videos": len(spec.split_plan.train_videos),
+        "val_videos": len(spec.split_plan.val_videos),
+        "stage0": {
+            "checkpoint": str(stage0_result.checkpoint_path),
+            "metrics_path": str(stage0_result.metrics_path),
+            "config_snapshot_path": str(stage0_result.config_snapshot_path),
+            "history_path": str(stage0_result.history_path),
+            "best_epoch": int(stage0_result.best_epoch),
+            "best_source": str(stage0_result.best_source),
+            "elapsed_seconds": float(stage0_result.elapsed_seconds),
+            "metrics": stage0_result.metrics,
+        },
+        "phase1": {
+            "probe_checkpoint": str(phase1_result.probe_checkpoint),
+            "tcn_checkpoint": str(phase1_result.tcn_checkpoint),
+            "metrics_path": str(phase1_result.metrics_path),
+            "config_snapshot_path": str(phase1_result.config_snapshot_path),
+            "history_path": str(phase1_result.history_path),
+            "best_epoch": int(phase1_result.best_epoch),
+            "best_loss": float(phase1_result.best_loss),
+            "effective_chunk_len": int(phase1_result.effective_chunk_len),
+            "elapsed_seconds": float(phase1_result.elapsed_seconds),
+            "metrics": phase1_result.metrics,
         },
     }
     (output_root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -1848,36 +2042,22 @@ def main() -> int:
         return 1
 
     print("---")
-    print(f"val_pair_f1:        {best_probe_eval.primary_metric:.6f}")
-    print(f"val_pair_f1_mean:   {best_probe_eval.mean_pair_f1:.6f}")
-    print(f"val_count_mae:      {best_probe_eval.mean_count_mae:.6f}")
-    print(f"val_start_mae_ms:   {best_probe_eval.mean_start_mae_ms:.1f}")
-    print(f"val_end_mae_ms:     {best_probe_eval.mean_end_mae_ms:.1f}")
-    for name in SPACE_ORDER:
-        metrics = best_probe_eval.metrics_by_space[name]
-        key = SPACE_KEY_BY_NAME[name]
-        print(f"{key}_val_pair_f1:   {metrics['val_pair_f1']:.6f}")
-        print(f"{key}_val_count_mae: {metrics['val_count_mae']:.6f}")
-        print(f"{key}_val_start_mae_ms:{metrics['val_start_mae_ms']:.1f}")
-        print(f"{key}_val_end_mae_ms:{metrics['val_end_mae_ms']:.1f}")
+    print(f"val_pair_f1:        {phase1_result.metrics['val_pair_f1']:.6f}")
+    print(f"val_count_mae:      {phase1_result.metrics['val_count_mae']:.6f}")
+    print(f"val_start_mae_ms:   {phase1_result.metrics['val_start_mae_ms']:.1f}")
+    print(f"val_end_mae_ms:     {phase1_result.metrics['val_end_mae_ms']:.1f}")
     print(f"training_seconds:   {tcn_stage_seconds + probe_stage_seconds:.1f}")
     print(f"total_seconds:      {total_seconds:.1f}")
     print(f"time_budget_seconds:{total_budget_seconds:.1f}")
     print(f"tcn_stage_seconds:  {tcn_stage_seconds:.1f}")
     print(f"probe_stage_seconds:{probe_stage_seconds:.1f}")
     print(f"peak_vram_mb:       {peak_vram_mb:.1f}")
-    print(f"num_rounds_tcn:     {tcn_round}")
-    print(f"num_rounds_probe:   {probe_round}")
-    print(f"tcn_trainable_params_M: {sum(_count_trainable_params(trainer.model) for trainer in tcn_trainers.values()) / 1e6:.3f}")
-    print(f"pooler_trainable_params_M: {sum(_count_trainable_params(trainer.probe) for trainer in probe_trainers.values()) / 1e6:.3f}")
-    print(f"model_family:       {MODEL_FAMILY}")
-    print(f"task_mode:          boundary_pairs_dual_space")
-    print(f"pooler_tune_mode:   phase1_per_space")
-    print(f"representation_mode:pooled_z0_then_tokens")
-    print(f"cache_root:         button={spaces['minda-button-tcn'].cache_root} subassembly={spaces['minda-subassembly-tcn'].cache_root}")
-    print(f"train_segments:     {sum(len(spec.split_plan.train_records) for spec in spaces.values())}")
-    print(f"val_segments:       {sum(len(spec.split_plan.val_records) for spec in spaces.values())}")
     print(f"cache_version:      {CACHE_VERSION}")
+    print(f"model_family:       {MODEL_FAMILY}")
+    print(f"task_mode:          {TASK_MODE}")
+    print(f"pooler_tune_mode:   phase1_historical")
+    print(f"representation_mode:pooled_z0_then_tokens")
+    print(f"cache_root:         {spec.cache_root}")
     print(f"output_root_final:  {output_root}")
     return 0
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 
 from .contracts import DenseTemporalRunConfig
@@ -154,7 +155,7 @@ class _StreamSpec:
     camera_id: str
     features_npz: Path
     labels_json: Path
-    source_video: Path
+    source_video: Optional[Path]
     roi: Optional[Dict[str, float]]
     fps: float
     supervised_start_frame: int
@@ -180,6 +181,121 @@ def _matches_filter(value: str, pattern: Optional[re.Pattern[str]]) -> bool:
     if pattern is None:
         return True
     return bool(pattern.search(str(value or "")))
+
+
+def _materialize_symlink(link_path: Path, target_path: Path) -> None:
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    if link_path.exists() or link_path.is_symlink():
+        current = link_path.resolve() if link_path.is_symlink() else link_path
+        if current == target_path.resolve():
+            return
+        link_path.unlink()
+    link_path.symlink_to(target_path)
+
+
+def _candidate_reuse_source_dirs(*, cfg: DenseTemporalRunConfig, work_dir: Path) -> List[Path]:
+    if str(os.getenv("AUTORESEARCH_DISABLE_FEATURE_REUSE", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return []
+
+    candidates: List[Path] = []
+    raw_env = str(os.getenv("AUTORESEARCH_REUSE_SOURCE_RUN_DIRS", "")).strip()
+    if raw_env:
+        for raw in raw_env.split(os.pathsep):
+            text = str(raw).strip()
+            if text:
+                candidates.append(Path(text).expanduser())
+
+    legacy_root = Path("/tmp/autoresearch_minda_sources")
+    if legacy_root.exists():
+        candidates.extend(sorted(legacy_root.glob("*/dense_temporal")))
+
+    seen: set[str] = set()
+    compatible: List[Path] = []
+    for candidate in candidates:
+        candidate = candidate.resolve() if candidate.exists() else candidate
+        key = str(candidate)
+        if key in seen or candidate == work_dir:
+            continue
+        seen.add(key)
+        resolved_cfg_path = candidate / "resolved_config.json"
+        features_dir = candidate / "features"
+        if not resolved_cfg_path.exists() or not features_dir.exists():
+            continue
+        try:
+            resolved_cfg = json.loads(resolved_cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        model_cfg = resolved_cfg.get("model") if isinstance(resolved_cfg.get("model"), dict) else {}
+        train_cfg = resolved_cfg.get("train") if isinstance(resolved_cfg.get("train"), dict) else {}
+        if str(resolved_cfg.get("space_id") or "").strip() != str(cfg.space_id):
+            continue
+        clip_len = train_cfg.get("clip_len")
+        stride = train_cfg.get("stride")
+        frame_skip = train_cfg.get("frame_skip")
+        if int(-1 if clip_len is None else clip_len) != int(cfg.train.clip_len):
+            continue
+        if int(-1 if stride is None else stride) != int(cfg.train.stride):
+            continue
+        if int(-1 if frame_skip is None else frame_skip) != int(cfg.train.frame_skip):
+            continue
+        if str(model_cfg.get("encoder_model") or "").strip().lower() != str(cfg.model.encoder_model).strip().lower():
+            continue
+        if str(model_cfg.get("preproc_id") or "").strip() != str(cfg.model.preproc_id):
+            continue
+        compatible.append(candidate)
+    return compatible
+
+
+def _load_feature_meta(feature_path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        with np.load(feature_path) as data:
+            return {
+                "video_id": str(data["video_id"].item()) if "video_id" in data else "",
+                "camera_id": str(data["camera_id"].item()) if "camera_id" in data else "",
+                "fps": float(data["fps"].item()) if "fps" in data else 0.0,
+                "clip_len": int(data["clip_len"].item()) if "clip_len" in data else -1,
+                "stride": int(data["stride"].item()) if "stride" in data else -1,
+                "frame_skip": int(data["frame_skip"].item()) if "frame_skip" in data else -1,
+                "pooler_sha": str(data["pooler_sha"].item()) if "pooler_sha" in data else "",
+            }
+    except Exception:
+        return None
+
+
+def _discover_reusable_feature_paths(
+    *,
+    cfg: DenseTemporalRunConfig,
+    work_dir: Path,
+    pooler_sha: str,
+) -> Dict[str, Path]:
+    expected_videos = {
+        str(video.video_id): str(video.camera_id)
+        for video in cfg.videos
+    }
+    reusable: Dict[str, Path] = {}
+    for source_dir in _candidate_reuse_source_dirs(cfg=cfg, work_dir=work_dir):
+        for feature_path in sorted((source_dir / "features").glob("*__features.npz")):
+            meta = _load_feature_meta(feature_path)
+            if not meta:
+                continue
+            video_id = str(feature_path.name).split("__features.npz")[0].strip()
+            if not video_id or video_id in reusable or video_id not in expected_videos:
+                continue
+            if str(meta.get("camera_id") or "").strip() != expected_videos[video_id]:
+                continue
+            clip_len = meta.get("clip_len")
+            stride = meta.get("stride")
+            frame_skip = meta.get("frame_skip")
+            if int(-1 if clip_len is None else clip_len) != int(cfg.train.clip_len):
+                continue
+            if int(-1 if stride is None else stride) != int(cfg.train.stride):
+                continue
+            if int(-1 if frame_skip is None else frame_skip) != int(cfg.train.frame_skip):
+                continue
+            if str(meta.get("pooler_sha") or "").strip() != str(pooler_sha):
+                continue
+            reusable[video_id] = feature_path.resolve()
+    return reusable
 
 
 def _stage_model_assets(
@@ -213,6 +329,7 @@ def _build_stream_specs(
     *,
     cfg: DenseTemporalRunConfig,
     work_dir: Path,
+    reusable_feature_paths: Optional[Dict[str, Path]] = None,
     camera_include_regex: Optional[str] = None,
     video_include_regex: Optional[str] = None,
     path_include_regex: Optional[str] = None,
@@ -233,6 +350,7 @@ def _build_stream_specs(
     if not candidate_videos:
         candidate_videos = list(cfg.videos)
     stream_specs: List[_StreamSpec] = []
+    reusable_feature_paths = dict(reusable_feature_paths or {})
 
     for video in candidate_videos:
         if not _matches_filter(video.camera_id, camera_re):
@@ -242,8 +360,19 @@ def _build_stream_specs(
         if not _matches_filter(video.path, path_re):
             continue
 
-        local_video = stage_video(video.path, downloads_dir=downloads_dir)
-        fps = float(video.fps) if video.fps is not None else float(probe_video_fps(local_video))
+        local_video: Optional[Path] = None
+        if str(video.video_id) not in reusable_feature_paths:
+            local_video = stage_video(video.path, downloads_dir=downloads_dir)
+        if video.fps is not None:
+            fps = float(video.fps)
+        elif local_video is not None:
+            fps = float(probe_video_fps(local_video))
+        else:
+            reusable_meta = _load_feature_meta(reusable_feature_paths[str(video.video_id)])
+            reusable_fps = float((reusable_meta or {}).get("fps") or 0.0)
+            if reusable_fps <= 0.0:
+                raise RuntimeError(f"Missing fps for reused video without local source probe: {video.video_id}")
+            fps = reusable_fps
         shards = build_dense_label_shards(
             video,
             label_map=dict(cfg.temporal_targets.label_map),
@@ -289,6 +418,7 @@ def _extract_stream_features(
     pooler_sha: str,
     encoder_checkpoint: Path,
     force_reextract: bool,
+    reusable_feature_paths: Optional[Dict[str, Path]] = None,
 ) -> None:
     from .vjepa.extract import ExtractConfig, VJEPAFeatureExtractor
 
@@ -312,12 +442,22 @@ def _extract_stream_features(
         ),
     )
 
+    reusable_feature_paths = dict(reusable_feature_paths or {})
+    reused_outputs: set[str] = set()
+    extracted_count = 0
     jobs: Dict[str, Dict[str, Any]] = {}
     for spec in stream_specs:
+        reusable = reusable_feature_paths.get(str(spec.video_id))
+        if reusable is not None:
+            _materialize_symlink(Path(spec.features_npz), reusable)
+            reused_outputs.add(str(spec.features_npz))
+            continue
         stop_after_ms = int(round(float(spec.supervised_end_frame) * 1000.0 / float(spec.fps)))
         key = str(spec.features_npz)
         current = jobs.get(key)
         if current is None:
+            if spec.source_video is None:
+                raise RuntimeError(f"Missing source_video for non-reused stream {spec.name}")
             jobs[key] = {
                 "video_path": Path(spec.source_video),
                 "camera_id": str(spec.camera_id),
@@ -337,3 +477,11 @@ def _extract_stream_features(
             stop_after_ms=int(job["stop_after_ms"]),
             force=bool(force_reextract),
         )
+        extracted_count += 1
+
+    LOGGER.info(
+        "Feature materialization complete: reused=%d extracted=%d total_streams=%d",
+        int(len(reused_outputs)),
+        int(extracted_count),
+        int(len(stream_specs)),
+    )

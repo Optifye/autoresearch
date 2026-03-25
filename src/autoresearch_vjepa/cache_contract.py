@@ -51,10 +51,10 @@ LOGGER = logging.getLogger(__name__)
 TIME_BUDGET = 600
 TOTAL_TIMEOUT_SECONDS = 900
 PAIR_TOLERANCE_MS = 1000
-VAL_RATIO = 0.5
+VAL_RATIO = 0.4
 CACHE_VERSION = "onemed_dense_v1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SPLIT_POLICY = "camera_balanced"
+DEFAULT_SPLIT_POLICY = "camera_stratified_hash"
 
 
 def _workspace_root_candidates() -> List[Path]:
@@ -79,7 +79,7 @@ def _resolve_cache_dir() -> Path:
     override = os.getenv("AUTORESEARCH_CACHE_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve() / CACHE_VERSION
-    return Path(os.path.expanduser("~")) / ".cache" / "autoresearch" / CACHE_VERSION
+    return Path("/tmp/autoresearch-minda-subassembly-cache") / CACHE_VERSION
 
 
 def configure_cache_paths(cache_root: Path) -> None:
@@ -275,9 +275,10 @@ def _clear_cache_outputs() -> None:
 
 def _normalize_split_policy(value: Optional[str]) -> str:
     token = str(value or DEFAULT_SPLIT_POLICY).strip().lower().replace("-", "_")
-    if token not in {"stable_hash", "camera_balanced"}:
+    if token not in {"stable_hash", "camera_balanced", "camera_stratified_hash"}:
         raise ValueError(
-            f"Unsupported split_policy={value!r}; expected one of ['camera_balanced', 'stable_hash']"
+            "Unsupported split_policy="
+            f"{value!r}; expected one of ['camera_balanced', 'camera_stratified_hash', 'stable_hash']"
         )
     return token
 
@@ -392,6 +393,47 @@ def _build_camera_balanced_video_split(
     return train_videos, val_videos_sorted, camera_val_counts, camera_total_counts, target_val_videos
 
 
+def _build_camera_stratified_hash_video_split(
+    records: Sequence[SegmentRecord],
+    *,
+    val_ratio: float,
+    seed: int,
+) -> Tuple[List[str], List[str], Dict[str, int], Dict[str, int], float]:
+    all_records = _unique_records(records)
+    if not all_records:
+        raise RuntimeError("Cannot build split with zero records.")
+
+    video_to_camera = _video_camera_index(all_records)
+    videos_by_camera: Dict[str, List[str]] = {}
+    for video_id, camera_id in video_to_camera.items():
+        videos_by_camera.setdefault(camera_id, []).append(video_id)
+
+    val_videos: List[str] = []
+    camera_val_counts: Dict[str, int] = {}
+    camera_total_counts: Dict[str, int] = {}
+    for camera_id in sorted(videos_by_camera):
+        videos = sorted(videos_by_camera[camera_id])
+        camera_total_counts[camera_id] = int(len(videos))
+        if len(videos) <= 1:
+            camera_val_counts[camera_id] = 0
+            continue
+        pick_count = max(1, round(len(videos) * float(val_ratio)))
+        scored: List[Tuple[int, str]] = []
+        for video_id in videos:
+            digest = hashlib.sha1(f"{seed}:{camera_id}:{video_id}".encode("utf-8")).hexdigest()
+            scored.append((int(digest[:12], 16), video_id))
+        scored.sort()
+        chosen = [video_id for _, video_id in scored[:pick_count]]
+        val_videos.extend(chosen)
+        camera_val_counts[camera_id] = int(len(chosen))
+
+    val_videos_sorted = sorted(set(val_videos))
+    train_videos = sorted(video_id for video_id in video_to_camera if video_id not in set(val_videos_sorted))
+    return train_videos, val_videos_sorted, camera_val_counts, camera_total_counts, float(
+        len(video_to_camera)
+    ) * float(val_ratio)
+
+
 def _materialize_split_records(
     records: Sequence[SegmentRecord],
     *,
@@ -406,6 +448,18 @@ def _materialize_split_records(
     policy = _normalize_split_policy(split_policy)
     if policy == "stable_hash":
         train_videos, val_videos, camera_val_counts, camera_total_counts, target_val_videos = _build_stable_hash_video_split(
+            all_records,
+            val_ratio=val_ratio,
+            seed=seed,
+        )
+    elif policy == "camera_stratified_hash":
+        (
+            train_videos,
+            val_videos,
+            camera_val_counts,
+            camera_total_counts,
+            target_val_videos,
+        ) = _build_camera_stratified_hash_video_split(
             all_records,
             val_ratio=val_ratio,
             seed=seed,
@@ -548,6 +602,7 @@ def materialize_run_source(
     cfg = _normalize_cfg_paths(cfg)
     from .materialize import (
         _build_stream_specs,
+        _discover_reusable_feature_paths,
         _extract_stream_features,
         _stage_model_assets,
     )
@@ -575,9 +630,15 @@ def materialize_run_source(
         cfg=cfg,
         work_dir=materialized_root,
     )
+    reusable_feature_paths = _discover_reusable_feature_paths(
+        cfg=cfg,
+        work_dir=materialized_root,
+        pooler_sha=str(pooler_sha),
+    )
     stream_specs = _build_stream_specs(
         cfg=cfg,
         work_dir=materialized_root,
+        reusable_feature_paths=reusable_feature_paths,
         camera_include_regex=camera_include_regex,
         video_include_regex=video_include_regex,
         path_include_regex=path_include_regex,
@@ -589,6 +650,7 @@ def materialize_run_source(
         pooler_sha=str(pooler_sha),
         encoder_checkpoint=Path(encoder_ckpt),
         force_reextract=bool(force_reextract),
+        reusable_feature_paths=reusable_feature_paths,
     )
 
     summary = {
@@ -1300,7 +1362,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--split-policy",
         default=DEFAULT_SPLIT_POLICY,
-        choices=("camera_balanced", "stable_hash"),
+        choices=("camera_balanced", "camera_stratified_hash", "stable_hash"),
         help="Video-level split policy written into the prepared cache.",
     )
     parser.add_argument("--val-ratio", type=float, default=VAL_RATIO, help="Video-level validation ratio")

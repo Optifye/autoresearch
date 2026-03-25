@@ -1,0 +1,147 @@
+Uninstalled 1 package in 3ms
+Installed 1 package in 13ms
+2026-03-25 09:29:38,860 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=100000 starts after first boundary idx=249 for stream '0d7b50e3-1392-4906-ace9-6e10bc55b7f3__seg001'; early cycles will be dropped
+2026-03-25 09:29:38,860 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=100000 aligns with first cycle for stream '0d7b50e3-1392-4906-ace9-6e10bc55b7f3__seg001' but searchsorted trimmed start idx (250 -> 249); preserving cycle coverage
+2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99240 starts after first boundary idx=247 for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000'; early cycles will be dropped
+2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99240 aligns with first cycle for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000' but searchsorted trimmed start idx (248 -> 247); preserving cycle coverage
+2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_end_ms=214600 ends before last boundary idx=536 for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000'; late cycles will be truncated
+2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_end_ms=214600 aligns with last cycle for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000' but searchsorted trimmed end idx (535 -> 536); preserving cycle coverage
+2026-03-25 09:29:38,879 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=572040 starts after first boundary idx=1429 for stream '2d3012cc-cc54-4df0-bbe5-8c3c19019715__seg000'; early cycles will be dropped
+2026-03-25 09:29:38,879 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=572040 aligns with first cycle for stream '2d3012cc-cc54-4df0-bbe5-8c3c19019715__seg000' but searchsorted trimmed start idx (1430 -> 1429); preserving cycle coverage
+2026-03-25 09:29:38,883 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=136400 starts after first boundary idx=340 for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg001'; early cycles will be dropped
+2026-03-25 09:29:38,883 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=136400 aligns with first cycle for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg001' but searchsorted trimmed start idx (341 -> 340); preserving cycle coverage
+2026-03-25 09:29:38,887 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=251200 starts after first boundary idx=627 for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg002'; early cycles will be dropped
+2026-03-25 09:29:38,887 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=251200 aligns with first cycle for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg002' but searchsorted trimmed start idx (628 -> 627); preserving cycle coverage
+2026-03-25 09:29:38,894 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=434400 starts after first boundary idx=1085 for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg004'; early cycles will be dropped
+2026-03-25 09:29:38,894 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=434400 aligns with first cycle for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg004' but searchsorted trimmed start idx (1086 -> 1085); preserving cycle coverage
+2026-03-25 09:29:38,934 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=506760 starts after first boundary idx=1266 for stream 'f6d86963-13ab-4160-a2ab-ea92576889bc__seg004'; early cycles will be dropped
+2026-03-25 09:29:38,934 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=506760 aligns with first cycle for stream 'f6d86963-13ab-4160-a2ab-ea92576889bc__seg004' but searchsorted trimmed start idx (1267 -> 1266); preserving cycle coverage
+2026-03-25 09:29:40,718 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=342760 starts after first boundary idx=856 for stream '13bef905-94de-4488-93ee-1a03ea3dbf85__seg001'; early cycles will be dropped
+2026-03-25 09:29:40,718 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=342760 aligns with first cycle for stream '13bef905-94de-4488-93ee-1a03ea3dbf85__seg001' but searchsorted trimmed start idx (857 -> 856); preserving cycle coverage
+2026-03-25 09:29:40,753 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=153960 starts after first boundary idx=384 for stream '55ab6dfe-f83a-4370-b0c2-45b6398f8362__seg001'; early cycles will be dropped
+2026-03-25 09:29:40,753 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=153960 aligns with first cycle for stream '55ab6dfe-f83a-4370-b0c2-45b6398f8362__seg001' but searchsorted trimmed start idx (385 -> 384); preserving cycle coverage
+2026-03-25 09:29:40,766 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=465920 starts after first boundary idx=1164 for stream '75db36fc-daf2-452f-9890-d8f74c40588a__seg000'; early cycles will be dropped
+2026-03-25 09:29:40,766 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=465920 aligns with first cycle for stream '75db36fc-daf2-452f-9890-d8f74c40588a__seg000' but searchsorted trimmed start idx (1165 -> 1164); preserving cycle coverage
+2026-03-25 09:29:40,783 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99200 starts after first boundary idx=247 for stream '9750838e-acac-402c-98fe-4a2e77fba4af__seg001'; early cycles will be dropped
+2026-03-25 09:29:40,783 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99200 aligns with first cycle for stream '9750838e-acac-402c-98fe-4a2e77fba4af__seg001' but searchsorted trimmed start idx (248 -> 247); preserving cycle coverage
+2026-03-25 09:29:52,001 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=1 loss=4.4662 pair_heads=['start', 'end', 'cycle'] macro_f1=0.3885 trainable_params_M=3.192
+2026-03-25 09:30:00,733 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=1 loss=6.4826 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5506 trainable_params_M=1.614
+2026-03-25 09:30:02,683 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=2 loss=4.3337 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5434 trainable_params_M=3.192
+2026-03-25 09:30:04,281 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=2 loss=5.9962 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6221 trainable_params_M=1.614
+2026-03-25 09:30:06,066 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=3 loss=3.4390 pair_heads=['start', 'end', 'cycle'] macro_f1=0.2674 trainable_params_M=3.192
+2026-03-25 09:30:07,656 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=3 loss=5.1720 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5824 trainable_params_M=1.614
+2026-03-25 09:30:09,530 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=4 loss=2.7533 pair_heads=['start', 'end', 'cycle'] macro_f1=0.4891 trainable_params_M=3.192
+2026-03-25 09:30:11,121 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=4 loss=3.4313 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7871 trainable_params_M=1.614
+2026-03-25 09:30:12,992 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=5 loss=2.3139 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5233 trainable_params_M=3.192
+2026-03-25 09:30:14,619 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=5 loss=2.9147 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7612 trainable_params_M=1.614
+2026-03-25 09:30:16,488 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=6 loss=1.9770 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6139 trainable_params_M=3.192
+2026-03-25 09:30:18,131 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=6 loss=2.2534 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8027 trainable_params_M=1.614
+2026-03-25 09:30:19,898 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=7 loss=1.6105 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6297 trainable_params_M=3.192
+2026-03-25 09:30:21,522 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=7 loss=2.0553 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8440 trainable_params_M=1.614
+2026-03-25 09:30:23,365 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=8 loss=1.3597 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6930 trainable_params_M=3.192
+2026-03-25 09:30:24,946 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=8 loss=1.7527 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8545 trainable_params_M=1.614
+2026-03-25 09:30:26,793 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=9 loss=1.1101 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6698 trainable_params_M=3.192
+2026-03-25 09:30:28,197 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=9 loss=1.4312 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8462 trainable_params_M=1.614
+2026-03-25 09:30:29,978 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=10 loss=0.9788 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6606 trainable_params_M=3.192
+2026-03-25 09:30:31,570 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=10 loss=1.2875 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8762 trainable_params_M=1.614
+2026-03-25 09:30:42,423 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=11 loss=0.8386 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6912 trainable_params_M=3.192
+2026-03-25 09:30:43,644 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=11 loss=1.1114 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8676 trainable_params_M=1.614
+2026-03-25 09:30:45,126 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=12 loss=0.7729 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6957 trainable_params_M=3.192
+2026-03-25 09:30:46,423 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=12 loss=1.0207 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8851 trainable_params_M=1.614
+2026-03-25 09:30:47,989 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=13 loss=0.7019 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6865 trainable_params_M=3.192
+2026-03-25 09:30:49,196 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=13 loss=0.9752 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8764 trainable_params_M=1.614
+2026-03-25 09:30:50,797 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=14 loss=0.6366 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7020 trainable_params_M=3.192
+2026-03-25 09:30:51,984 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=14 loss=0.8617 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9032 trainable_params_M=1.614
+2026-03-25 09:30:53,594 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=15 loss=0.6053 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7223 trainable_params_M=3.192
+2026-03-25 09:30:54,772 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=15 loss=0.7601 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9056 trainable_params_M=1.614
+2026-03-25 09:30:56,239 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=16 loss=0.5821 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7214 trainable_params_M=3.192
+2026-03-25 09:30:57,828 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=16 loss=0.7117 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9088 trainable_params_M=1.614
+2026-03-25 09:30:59,724 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=17 loss=0.5490 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7444 trainable_params_M=3.192
+2026-03-25 09:31:01,280 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=17 loss=0.6356 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9165 trainable_params_M=1.614
+2026-03-25 09:31:03,256 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=18 loss=0.5070 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7481 trainable_params_M=3.192
+2026-03-25 09:31:04,930 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=18 loss=0.5848 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9155 trainable_params_M=1.614
+2026-03-25 09:31:06,749 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=19 loss=0.4791 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7673 trainable_params_M=3.192
+2026-03-25 09:31:08,286 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=19 loss=0.5319 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9317 trainable_params_M=1.614
+2026-03-25 09:31:10,083 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=20 loss=0.4606 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8049 trainable_params_M=3.192
+2026-03-25 09:31:11,639 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=20 loss=0.5040 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9341 trainable_params_M=1.614
+2026-03-25 09:31:14,869 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=21 loss=0.4369 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7966 trainable_params_M=3.192
+2026-03-25 09:31:16,405 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=21 loss=0.4701 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9398 trainable_params_M=1.614
+2026-03-25 09:31:18,250 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=22 loss=0.4207 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8187 trainable_params_M=3.192
+2026-03-25 09:31:19,817 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=22 loss=0.4046 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9374 trainable_params_M=1.614
+2026-03-25 09:31:21,673 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=23 loss=0.3998 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8358 trainable_params_M=3.192
+2026-03-25 09:31:23,395 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=23 loss=0.3747 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9503 trainable_params_M=1.614
+2026-03-25 09:31:25,359 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=24 loss=0.3895 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8385 trainable_params_M=3.192
+2026-03-25 09:31:27,042 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=24 loss=0.3478 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9545 trainable_params_M=1.614
+2026-03-25 09:31:28,971 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=25 loss=0.3753 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8413 trainable_params_M=3.192
+2026-03-25 09:31:30,639 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=25 loss=0.3323 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9593 trainable_params_M=1.614
+2026-03-25 09:31:32,552 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=26 loss=0.3620 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8614 trainable_params_M=3.192
+2026-03-25 09:31:33,368 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=26 loss=0.3026 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9594 trainable_params_M=1.614
+2026-03-25 09:31:35,178 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=27 loss=0.3370 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8456 trainable_params_M=3.192
+2026-03-25 09:31:36,670 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=27 loss=0.2774 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9665 trainable_params_M=1.614
+2026-03-25 09:31:38,517 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=28 loss=0.3074 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8831 trainable_params_M=3.192
+2026-03-25 09:31:39,718 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=28 loss=0.2576 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9665 trainable_params_M=1.614
+2026-03-25 09:31:41,200 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=29 loss=0.2983 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8537 trainable_params_M=3.192
+2026-03-25 09:31:42,329 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=29 loss=0.2446 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9708 trainable_params_M=1.614
+2026-03-25 09:31:43,829 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=30 loss=0.2919 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8775 trainable_params_M=3.192
+2026-03-25 09:31:45,166 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=30 loss=0.2189 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9688 trainable_params_M=1.614
+2026-03-25 09:31:47,644 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=31 loss=0.2768 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8826 trainable_params_M=3.192
+2026-03-25 09:31:48,869 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=31 loss=0.2076 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9754 trainable_params_M=1.614
+2026-03-25 09:31:50,433 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=32 loss=0.2660 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8760 trainable_params_M=3.192
+2026-03-25 09:31:52,117 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=32 loss=0.1968 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9784 trainable_params_M=1.614
+2026-03-25 09:31:54,101 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=33 loss=0.2516 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8908 trainable_params_M=3.192
+2026-03-25 09:31:55,691 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=33 loss=0.1809 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9798 trainable_params_M=1.614
+2026-03-25 09:31:57,840 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=34 loss=0.2501 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9138 trainable_params_M=3.192
+2026-03-25 09:31:59,528 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=34 loss=0.1667 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9826 trainable_params_M=1.614
+2026-03-25 09:32:01,548 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=35 loss=0.2433 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9121 trainable_params_M=3.192
+2026-03-25 09:32:03,166 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=35 loss=0.1542 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9838 trainable_params_M=1.614
+2026-03-25 09:32:05,122 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=36 loss=0.2349 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9069 trainable_params_M=3.192
+2026-03-25 09:32:06,701 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=36 loss=0.1474 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9867 trainable_params_M=1.614
+2026-03-25 09:32:08,315 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=37 loss=0.2249 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9177 trainable_params_M=3.192
+2026-03-25 09:32:09,497 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=37 loss=0.1467 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9874 trainable_params_M=1.614
+2026-03-25 09:32:11,158 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=38 loss=0.2240 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9315 trainable_params_M=3.192
+2026-03-25 09:32:12,454 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=38 loss=0.1278 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9897 trainable_params_M=1.614
+2026-03-25 09:32:13,563 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=39 loss=0.2166 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9181 trainable_params_M=3.192
+2026-03-25 09:32:14,805 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=39 loss=0.1113 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9902 trainable_params_M=1.614
+2026-03-25 09:32:16,304 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=40 loss=0.2114 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9336 trainable_params_M=3.192
+2026-03-25 09:32:17,489 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=40 loss=0.1079 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9901 trainable_params_M=1.614
+2026-03-25 09:32:19,695 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=41 loss=0.2101 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9471 trainable_params_M=3.192
+2026-03-25 09:32:21,033 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=41 loss=0.0988 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9922 trainable_params_M=1.614
+2026-03-25 09:32:22,743 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=42 loss=0.2028 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9497 trainable_params_M=3.192
+2026-03-25 09:32:23,990 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=42 loss=0.0920 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9933 trainable_params_M=1.614
+2026-03-25 09:32:25,643 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=43 loss=0.2008 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9305 trainable_params_M=3.192
+2026-03-25 09:32:26,873 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=43 loss=0.0854 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9957 trainable_params_M=1.614
+2026-03-25 09:32:28,519 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=44 loss=0.1897 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9331 trainable_params_M=3.192
+2026-03-25 09:32:29,816 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=44 loss=0.0847 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9957 trainable_params_M=1.614
+2026-03-25 09:32:31,372 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=45 loss=0.1906 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9592 trainable_params_M=3.192
+2026-03-25 09:32:32,628 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=45 loss=0.0799 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9955 trainable_params_M=1.614
+2026-03-25 09:32:34,243 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=46 loss=0.1876 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9604 trainable_params_M=3.192
+2026-03-25 09:32:35,554 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=46 loss=0.0792 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9947 trainable_params_M=1.614
+2026-03-25 09:32:37,715 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=47 loss=0.1842 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9557 trainable_params_M=3.192
+2026-03-25 09:32:39,463 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=47 loss=0.0727 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9971 trainable_params_M=1.614
+2026-03-25 09:32:41,460 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=48 loss=0.1810 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9477 trainable_params_M=3.192
+2026-03-25 09:32:43,063 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=48 loss=0.0686 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9974 trainable_params_M=1.614
+2026-03-25 09:32:45,144 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=49 loss=0.1769 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9653 trainable_params_M=3.192
+2026-03-25 09:32:46,834 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=49 loss=0.0654 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9974 trainable_params_M=1.614
+2026-03-25 09:32:48,924 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=50 loss=0.1760 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9632 trainable_params_M=3.192
+2026-03-25 09:32:50,653 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=50 loss=0.0616 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9982 trainable_params_M=1.614
+2026-03-25 09:32:53,906 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=51 loss=0.1706 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9552 trainable_params_M=3.192
+2026-03-25 09:32:55,583 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=51 loss=0.0584 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9982 trainable_params_M=1.614
+2026-03-25 09:32:57,587 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=52 loss=0.1684 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9560 trainable_params_M=3.192
+2026-03-25 09:32:59,226 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=52 loss=0.0566 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9984 trainable_params_M=1.614
+2026-03-25 09:33:01,163 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=53 loss=0.1651 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9753 trainable_params_M=3.192
+2026-03-25 09:33:02,796 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=53 loss=0.0522 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9984 trainable_params_M=1.614
+2026-03-25 09:33:04,860 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=54 loss=0.1627 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9753 trainable_params_M=3.192
+2026-03-25 09:33:06,509 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=54 loss=0.0510 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9992 trainable_params_M=1.614
+2026-03-25 09:33:08,601 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=55 loss=0.1600 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9640 trainable_params_M=3.192
+2026-03-25 09:33:10,220 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=55 loss=0.0509 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9987 trainable_params_M=1.614
+2026-03-25 09:33:12,305 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=56 loss=0.1590 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9661 trainable_params_M=3.192
+2026-03-25 09:33:13,879 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=56 loss=0.0455 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9990 trainable_params_M=1.614
+2026-03-25 09:33:15,721 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=57 loss=0.1572 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9804 trainable_params_M=3.192
+2026-03-25 09:33:16,959 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=57 loss=0.0439 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9995 trainable_params_M=1.614
+2026-03-25 09:33:18,463 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=58 loss=0.1534 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9847 trainable_params_M=3.192
+2026-03-25 09:33:19,754 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=58 loss=0.0415 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9997 trainable_params_M=1.614
+2026-03-25 09:33:21,264 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=59 loss=0.1516 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9804 trainable_params_M=3.192
+2026-03-25 09:33:22,439 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=59 loss=0.0410 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9997 trainable_params_M=1.614
+2026-03-25 09:33:24,107 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=60 loss=0.1500 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9868 trainable_params_M=3.192
+2026-03-25 09:33:25,497 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=60 loss=0.0417 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9995 trainable_params_M=1.614
+2026-03-25 09:33:27,964 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=61 loss=0.1506 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9805 trainable_params_M=3.192

@@ -20,25 +20,22 @@ To set up a new experiment, work with the user to:
    * what is editable,
    * what metric is the ground-truth decision metric,
    * what artifacts / cache the run depends on.
-4. **Verify data exists**: check that the required local cache exists (by default `~/.cache/autoresearch/onemed_dense_v1/`, unless the repo clearly specifies another path). If a local override is supported, use the repo’s existing mechanism such as `AUTORESEARCH_CACHE_DIR` or `--cache-dir`. For the dual-space Minda branch, prepare the button and subassembly caches separately with the repo’s direct Python entrypoint:
-
-```bash
-AUTORESEARCH_WORKSPACE_ROOT=/home/ubuntu/internvideo-attention \
-AUTORESEARCH_ENV_PATH=/home/ubuntu/autoresearch/.env \
-uv run python prepare.py \
-  --cache-dir /tmp/autoresearch-minda-button-cache \
-  --source-run-dir /tmp/embedding_runs/<button_run>/dense_temporal \
-  --force
-```
+4. **Verify data exists**: check that the required local cache exists (by default `~/.cache/autoresearch/onemed_dense_v1/`, unless the repo clearly specifies another path). If a local override is supported, use the repo’s existing mechanism such as `AUTORESEARCH_CACHE_DIR` or `--cache-dir`. For this branch, use only the single subassembly cache. Do not prepare or reference a button cache. The canonical prepare path is:
 
 ```bash
 AUTORESEARCH_WORKSPACE_ROOT=/home/ubuntu/internvideo-attention \
 AUTORESEARCH_ENV_PATH=/home/ubuntu/autoresearch/.env \
 uv run python prepare.py \
   --cache-dir /tmp/autoresearch-minda-subassembly-cache \
-  --source-run-dir /tmp/autoresearch_minda_sources/minda-subassembly-tcn/dense_temporal \
+  --run-id 92c8fdb4-c0f6-4503-b2cc-ab340f79f8f6 \
+  --space-id a5fe549e-75fe-4cb3-80ce-9b60e33b89fb \
+  --run-number 5 \
+  --split-policy camera_stratified_hash \
+  --val-ratio 0.4 \
   --force
 ```
+
+If `/tmp/autoresearch-minda-subassembly-cache/onemed_dense_v1` already exists, reuse it and do not rerun `prepare.py`.
 5. **Initialize `results.tsv`**: create `results.tsv` with just the header row. The baseline will be recorded after the first run.
 6. **Confirm and go**: confirm setup looks good.
 
@@ -52,15 +49,15 @@ Once setup is confirmed, kick off the experimentation.
 * Prefer the existing checked-out workspace plus the repo’s own `.venv`; do not create ad hoc alternate environments.
 * If the run needs shared checkpoints or credentials from another workspace, use the repo’s existing path-based hooks such as `AUTORESEARCH_WORKSPACE_ROOT` and `AUTORESEARCH_ENV_PATH`.
 
-Each experiment runs on a single GPU. The training script runs for a **fixed 10-minute time budget**. For the dual-space Minda branch, launch it as:
+Each experiment runs on a single GPU. The training script runs for a **fixed 10-minute time budget**. For this branch, launch it as:
 
 ```bash
-AUTORESEARCH_MINDA_BUTTON_CACHE_DIR=/tmp/autoresearch-minda-button-cache \
-AUTORESEARCH_MINDA_SUBASSEMBLY_CACHE_DIR=/tmp/autoresearch-minda-subassembly-cache \
-AUTORESEARCH_MINDA_SUBASSEMBLY_SOURCE_RUN_DIR=/tmp/autoresearch_minda_sources/minda-subassembly-tcn/dense_temporal \
+AUTORESEARCH_CACHE_DIR=/tmp/autoresearch-minda-subassembly-cache \
 CUDA_VISIBLE_DEVICES=0 \
 uv run python train.py
 ```
+
+This branch reads the source run from the prepared cache manifest; do not pass button-specific env vars.
 
 Treat the task-specific cache contract as fixed. In this standalone dense-temporal / vision setting, that means things like:
 
@@ -69,6 +66,7 @@ Treat the task-specific cache contract as fixed. In this standalone dense-tempor
 * fixed prepare/materialization path,
 * fixed held-out validation protocol,
 * fixed frozen upstream V-JEPA encoder assumptions unless `train.py` already makes something tunable.
+* For this branch, the fixed contract is a single subassembly dataset with a deterministic `60/40` `camera_stratified_hash` validation split.
 
 **What you CAN do:**
 
@@ -93,7 +91,7 @@ Treat the task-specific cache contract as fixed. In this standalone dense-tempor
 * Rewrite the repo into a totally different system if the experiment is meant to improve the existing stack rather than replace it.
 
 **The goal is simple: improve the primary validation metric defined by the repo.**
-For the dual-space Minda branch, compare candidates by average `val_pair_f1` across button and subassembly, and do not keep changes that materially regress either space.
+For this single-space Minda subassembly branch, compare candidates by `val_pair_f1` on the held-out subassembly validation split, then `val_count_mae`, then average timing MAE.
 
 Since the runtime budget is fixed, you do not need to obsess over absolute training duration inside that budget. Everything is fair game within `train.py`: architecture, optimizer, losses, schedules, batching, parameterization, temporal context, decoding head, and representation consumption.
 
@@ -118,22 +116,19 @@ When the script finishes it should print a summary block like this:
 ```text
 ---
 val_pair_f1:        0.000000
-val_pair_f1_mean:   0.000000
 val_count_mae:      0.000000
 val_start_mae_ms:   0.0
 val_end_mae_ms:     0.0
-button_val_pair_f1: 0.000000
-subassembly_val_pair_f1: 0.000000
 training_seconds:   600.0
 total_seconds:      620.0
+time_budget_seconds:600.0
+tcn_stage_seconds:  300.0
+probe_stage_seconds:300.0
 peak_vram_mb:       0.0
-num_rounds_tcn:     0
-num_rounds_probe:   0
-tcn_trainable_params_M: 0.000
-pooler_trainable_params_M: 0.000
-model_family:       minda_dual_prod_tcn_probe_phase1
-task_mode:          boundary_pairs_dual_space
-pooler_tune_mode:   phase1_per_space
+cache_version:      onemed_dense_v1
+model_family:       minda_subassembly_mar13_stage0_historical_probe
+task_mode:          boundary_pairs_single_space
+pooler_tune_mode:   phase1_historical
 representation_mode:pooled_z0_then_tokens
 ```
 
@@ -142,7 +137,7 @@ The exact fields may differ by repo and task mode, but the script must print a m
 You can extract the key metrics from the log file with commands like:
 
 ```bash
-grep "^val_pair_f1:\|^val_pair_f1_mean:\|^button_val_pair_f1:\|^subassembly_val_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
+grep "^val_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
 ```
 
 If the summary block is missing, the run failed.
@@ -160,17 +155,19 @@ commit	primary_metric	aux_metric	memory_gb	status	description
 Where:
 
 1. `commit` = git commit hash (short, 7 chars)
-2. `primary_metric` = average `val_pair_f1` across the button and subassembly spaces — use `0.000000` for crashes
-3. `aux_metric` = the lower of the two per-space `val_pair_f1` values
+2. `primary_metric` = `val_pair_f1` on the held-out subassembly validation split — use `0.000000` for crashes
+3. `aux_metric` = `val_count_mae`
 4. `memory_gb` = peak memory in GB, round to `.1f` (divide `peak_vram_mb` by 1024) — use `0.0` for crashes
 5. `status` = `keep`, `discard`, or `crash`
 6. `description` = short text description of what this experiment tried
+
+Use timing MAE as the next tie-breaker when `primary_metric` and `aux_metric` are effectively tied.
 
 Example:
 
 ```text
 commit	primary_metric	aux_metric	memory_gb	status	description
-a1b2c3d	0.812300	0.790000	18.6	keep	dual-space baseline
+a1b2c3d	0.812300	0.440000	18.6	keep	subassembly baseline
 b2c3d4e	0.826700	0.804000	18.9	keep	increase temporal receptive field
 c3d4e5f	0.821000	0.781000	18.7	discard	switch auxiliary loss weighting
 d4e5f6g	0.000000	0.000000	0.0	crash	double hidden width caused OOM
@@ -190,9 +187,7 @@ LOOP FOREVER:
 4. Run the experiment:
 
 ```bash
-AUTORESEARCH_MINDA_BUTTON_CACHE_DIR=/tmp/autoresearch-minda-button-cache \
-AUTORESEARCH_MINDA_SUBASSEMBLY_CACHE_DIR=/tmp/autoresearch-minda-subassembly-cache \
-AUTORESEARCH_MINDA_SUBASSEMBLY_SOURCE_RUN_DIR=/tmp/autoresearch_minda_sources/minda-subassembly-tcn/dense_temporal \
+AUTORESEARCH_CACHE_DIR=/tmp/autoresearch-minda-subassembly-cache \
 CUDA_VISIBLE_DEVICES=0 \
 uv run python train.py > run.log 2>&1
 ```
@@ -202,7 +197,7 @@ Redirect everything — do **NOT** use `tee` or let output flood your context.
 5. Read out the results:
 
 ```bash
-grep "^val_pair_f1:\|^val_pair_f1_mean:\|^button_val_pair_f1:\|^subassembly_val_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
+grep "^val_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
 ```
 
 6. If the grep output is empty, the run crashed. Read the traceback with:

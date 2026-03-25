@@ -25,93 +25,101 @@ def test_stage_budget_split_scales_total_budget(monkeypatch) -> None:
     assert tcn_scaled == 5.0
     assert probe_scaled == 5.0
 
-def test_bundle_metrics_uses_worst_space_as_primary() -> None:
-    bundle = train._bundle_metrics(
-        {
-            "minda-button-tcn": {
-                "val_pair_f1": 0.9,
-                "val_count_mae": 0.2,
-                "val_start_mae_ms": 100.0,
-                "val_end_mae_ms": 120.0,
-            },
-            "minda-subassembly-tcn": {
-                "val_pair_f1": 0.8,
-                "val_count_mae": 0.4,
-                "val_start_mae_ms": 150.0,
-                "val_end_mae_ms": 170.0,
-            },
-        }
+
+def test_stage_budget_split_respects_requested_ratio(monkeypatch) -> None:
+    monkeypatch.setenv("AUTORESEARCH_TCN_STAGE_SECONDS", "400")
+    monkeypatch.setenv("AUTORESEARCH_PROBE_STAGE_SECONDS", "200")
+
+    tcn_seconds, probe_seconds = train.resolve_stage_budget_seconds(60.0)
+    assert tcn_seconds == 40.0
+    assert probe_seconds == 20.0
+
+
+def test_is_better_metrics_prefers_f1_then_count_then_timing() -> None:
+    incumbent = {
+        "val_pair_f1": 0.90,
+        "val_count_mae": 0.20,
+        "val_start_mae_ms": 110.0,
+        "val_end_mae_ms": 150.0,
+    }
+    better_f1 = {
+        "val_pair_f1": 0.91,
+        "val_count_mae": 0.30,
+        "val_start_mae_ms": 200.0,
+        "val_end_mae_ms": 220.0,
+    }
+    better_count = {
+        "val_pair_f1": 0.90,
+        "val_count_mae": 0.10,
+        "val_start_mae_ms": 180.0,
+        "val_end_mae_ms": 200.0,
+    }
+    better_timing = {
+        "val_pair_f1": 0.90,
+        "val_count_mae": 0.20,
+        "val_start_mae_ms": 90.0,
+        "val_end_mae_ms": 120.0,
+    }
+    worse = {
+        "val_pair_f1": 0.89,
+        "val_count_mae": 0.01,
+        "val_start_mae_ms": 10.0,
+        "val_end_mae_ms": 20.0,
+    }
+
+    assert train._is_better_metrics(better_f1, incumbent) is True
+    assert train._is_better_metrics(better_count, incumbent) is True
+    assert train._is_better_metrics(better_timing, incumbent) is True
+    assert train._is_better_metrics(worse, incumbent) is False
+
+
+def test_resolve_left_context_respects_bidirectional_and_hybrid() -> None:
+    assert (
+        train._resolve_left_context_from_tcn_payload(
+            {
+                "seq_model": "hybrid_tcn_lstm",
+                "model_cfg": {"kernel_size": 5, "dilations": [1, 2, 4], "bidirectional": False},
+                "train_cfg": {},
+            }
+        )
+        == 0
+    )
+    assert (
+        train._resolve_left_context_from_tcn_payload(
+            {
+                "seq_model": "tcn",
+                "model_cfg": {"kernel_size": 5, "dilations": [1, 2, 4], "bidirectional": True},
+                "train_cfg": {},
+            }
+        )
+        == 0
+    )
+    assert (
+        train._resolve_left_context_from_tcn_payload(
+            {
+                "seq_model": "tcn",
+                "model_cfg": {"kernel_size": 5, "dilations": [1, 2, 4], "bidirectional": False},
+                "train_cfg": {},
+            }
+        )
+        == (5 - 1) * 2 * (1 + 2 + 4)
     )
 
-    assert bundle.primary_metric == 0.8
-    assert round(bundle.mean_pair_f1, 6) == 0.85
-    assert round(bundle.mean_count_mae, 6) == 0.3
 
+def test_resolve_source_run_dir_prefers_manifest_source(tmp_path, monkeypatch) -> None:
+    fresh_source = tmp_path / "fresh" / "dense_temporal"
+    for child in ("features", "labels"):
+        (fresh_source / child).mkdir(parents=True, exist_ok=True)
+    (fresh_source / "snapshot.json").write_text("{}", encoding="utf-8")
+    (fresh_source / "resolved_config.json").write_text("{}", encoding="utf-8")
 
-def test_should_replace_eval_prefers_worse_case_improvement() -> None:
-    best = train._bundle_metrics(
-        {
-            "minda-button-tcn": {
-                "val_pair_f1": 0.9,
-                "val_count_mae": 0.2,
-                "val_start_mae_ms": 100.0,
-                "val_end_mae_ms": 120.0,
-            },
-            "minda-subassembly-tcn": {
-                "val_pair_f1": 0.8,
-                "val_count_mae": 0.2,
-                "val_start_mae_ms": 100.0,
-                "val_end_mae_ms": 120.0,
-            },
-        }
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    (cache_root / "manifest.json").write_text(
+        '{"source_run_dirs": ["' + str(fresh_source) + '"]}',
+        encoding="utf-8",
     )
-    better = train._bundle_metrics(
-        {
-            "minda-button-tcn": {
-                "val_pair_f1": 0.91,
-                "val_count_mae": 0.3,
-                "val_start_mae_ms": 100.0,
-                "val_end_mae_ms": 120.0,
-            },
-            "minda-subassembly-tcn": {
-                "val_pair_f1": 0.82,
-                "val_count_mae": 0.3,
-                "val_start_mae_ms": 100.0,
-                "val_end_mae_ms": 120.0,
-            },
-        }
-    )
-    worse = train._bundle_metrics(
-        {
-            "minda-button-tcn": {
-                "val_pair_f1": 0.95,
-                "val_count_mae": 0.1,
-                "val_start_mae_ms": 90.0,
-                "val_end_mae_ms": 100.0,
-            },
-            "minda-subassembly-tcn": {
-                "val_pair_f1": 0.79,
-                "val_count_mae": 0.1,
-                "val_start_mae_ms": 90.0,
-                "val_end_mae_ms": 100.0,
-            },
-        }
-    )
+    monkeypatch.delenv("AUTORESEARCH_MINDA_SUBASSEMBLY_SOURCE_RUN_DIR", raising=False)
 
-    assert train._should_replace_eval(best, better) is True
-    assert train._should_replace_eval(best, worse) is False
-
-
-def test_resolve_left_context_falls_back_from_kernel_and_dilations() -> None:
-    left_ctx = train._resolve_left_context_from_tcn_payload(
-        {
-            "seq_model": "tcn",
-            "model_cfg": {
-                "kernel_size": 5,
-                "dilations": [1, 2, 4],
-                "bidirectional": False,
-            },
-            "train_cfg": {},
-        }
-    )
-    assert left_ctx == (5 - 1) * 2 * (1 + 2 + 4)
+    resolved = train._resolve_source_run_dir(cache_root)
+    assert resolved == fresh_source.resolve()
