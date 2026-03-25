@@ -161,7 +161,7 @@ class Stage0Config:
     kernel_size: int = 5
     dropout: float = 0.1
     use_layernorm: bool = True
-    dilations: Tuple[int, ...] = (1, 2, 4, 8, 16, 32)
+    dilations: Tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64)
     focal_gamma: float = 2.0
     pos_weight_start_end: float = 10.0
     pos_weight_cycle: float = 1.0
