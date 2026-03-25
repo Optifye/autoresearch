@@ -1221,7 +1221,7 @@ class ProbeTrainer:
             cyclece_weight=float(spec.cfg.train.stage1_cyclece_weight),
             cyclece_tau=float(spec.cfg.train.cyclece_tau),
             cyclece_radius=int(spec.cfg.train.cyclece_radius),
-            smooth_weight=0.05,
+            smooth_weight=0.07,
             distill_weight=float(spec.cfg.train.stage1_distill_weight),
             class_weight=float(spec.cfg.train.stage1_class_weight),
             fail_if_best_epoch_zero=bool(spec.cfg.train.stage1_fail_if_best_epoch_zero),
