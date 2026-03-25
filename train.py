@@ -1203,7 +1203,7 @@ class ProbeTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.config = prod_probe.ProbePhase1Config(
             epochs=int(spec.cfg.train.stage1_epochs),
-            probe_lr=float(spec.cfg.train.stage1_probe_lr),
+            probe_lr=1.5e-5,
             weight_decay=float(spec.cfg.train.weight_decay),
             grad_clip_norm=float(spec.cfg.train.grad_clip_norm),
             chunk_len=32 if str(spec.encoder_model).lower() == "large" else 256,
