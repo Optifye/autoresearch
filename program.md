@@ -8,18 +8,10 @@ To set up a new experiment, work with the user to:
 
 1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from the current default branch.
-3. **Read the in-scope files**: read the full repo context before doing anything else. The repo may be larger than the original LLM setup, but you must still identify the files that define:
-
-   * repository/task context (`README.md` and any top-level docs the repo clearly points to),
-   * fixed data preparation / cache / evaluation contract (`prepare.py` or equivalent),
-   * the main training entrypoint and the codepath you are allowed to modify (`train.py` or equivalent).
-
-   If the repo is larger, do not skim randomly. Read enough to understand:
-
-   * what is fixed,
-   * what is editable,
-   * what metric is the ground-truth decision metric,
-   * what artifacts / cache the run depends on.
+3. **Read the in-scope files**: Read these files for full context:
+   - `README.md` — repository context.
+   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
+   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
 4. **Verify data exists**: check that the required local cache exists (by default `~/.cache/autoresearch/onemed_dense_v1/`, unless the repo clearly specifies another path). If a local override is supported, use the repo’s existing mechanism such as `AUTORESEARCH_CACHE_DIR` or `--cache-dir`. For this branch, use only the single subassembly cache. Do not prepare or reference a button cache. The canonical prepare path is:
 
 ```bash
@@ -70,14 +62,15 @@ Treat the task-specific cache contract as fixed. In this standalone dense-tempor
 
 **What you CAN do:**
 
-* Modify `train.py` only.
+* Modify `train.py` only - this is the only file you edit
 * Change architecture.
+* Change temporal model.
 * Change temporal model internals.
-* Change optimizer, schedules, regularization, and hyperparameters.
+* Change optimizer, hyperparameters, training loop, batch size, model size, and related training details. But if incremental hyperparameter tuning starts to plateau, do not get stuck there; the bigger remaining gains are likely to come from systemic architectural changes to the network.
 * Change losses and weighting.
 * Use cached encoder tokens instead of pooled embeddings.
 * Tune the pooler from `train.py`.
-* Add auxiliary objectives, self-supervised techniques, LoRA, or small architectural improvements as long as they stay within the same base V-JEPA setup.
+* Add auxiliary objectives, self-supervised techniques, LoRA, or architectural improvements as long as they stay within the same base V-JEPA setup.
 * Add entirely new downstream temporal models.
 * Simplify the code if it preserves or improves results.
 
