@@ -1773,7 +1773,7 @@ class HistoricalProbeTrainer:
 def _historical_phase1_config(*, seed: int, chunk_len: int) -> prod_probe.ProbePhase1Config:
     return prod_probe.ProbePhase1Config(
         epochs=20,
-        probe_lr=2.5e-5,
+        probe_lr=2.6e-5,
         weight_decay=1e-4,
         grad_clip_norm=1.0,
         chunk_len=int(chunk_len),
