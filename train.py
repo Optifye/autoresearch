@@ -169,7 +169,7 @@ class Stage0Config:
     aux_loss_weight: float = 0.1
     transition_consistency_weight: float = 0.15
     neg_margin: float = 0.2
-    ignore_radius: int = 2
+    ignore_radius: int = 3
     smooth_sigma: float = 0.0
     ema_enabled: bool = True
     ema_decay: float = 0.9998
