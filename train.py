@@ -149,7 +149,7 @@ class SpaceSpec:
 class Stage0Config:
     seed: int = 42
     epochs: int = 200
-    val_every_epochs: int = 5
+    val_every_epochs: int = 4
     batch_size: int = 32
     chunk_len: int = 256
     grad_accum_steps: int = 1
