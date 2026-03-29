@@ -150,7 +150,7 @@ class Stage0Config:
     seed: int = 42
     epochs: int = 200
     val_every_epochs: int = 4
-    batch_size: int = 32
+    batch_size: int = 28
     chunk_len: int = 256
     grad_accum_steps: int = 1
     lr: float = 1e-3
