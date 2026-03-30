@@ -163,7 +163,7 @@ class Stage0Config:
     use_layernorm: bool = False
     dilations: Tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64)
     focal_gamma: float = 2.0
-    pos_weight_start_end: float = 12.0
+    pos_weight_start_end: float = 12.5
     pos_weight_cycle: float = 1.0
     cycle_loss_weight: float = 0.5
     aux_loss_weight: float = 0.1
