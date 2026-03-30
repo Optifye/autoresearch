@@ -159,7 +159,7 @@ class Stage0Config:
     final_lr_frac: float = 0.2
     hidden_dim: int = 192
     kernel_size: int = 5
-    dropout: float = 0.1
+    dropout: float = 0.09
     use_layernorm: bool = False
     dilations: Tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64)
     focal_gamma: float = 2.0
