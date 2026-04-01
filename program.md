@@ -84,7 +84,7 @@ Treat the task-specific cache contract as fixed. In this standalone dense-tempor
 * Rewrite the repo into a totally different system if the experiment is meant to improve the existing stack rather than replace it.
 
 **The goal is simple: improve the primary validation metric defined by the repo.**
-For this single-space Minda subassembly branch, compare candidates by `val_pair_f1` on the held-out subassembly validation split, then `val_count_mae`, then average timing MAE.
+For this single-space Minda subassembly branch, compare candidates by `val_pair_f1` on the held-out subassembly validation split, where `val_pair_f1` is the proxy-threshold macro-F1 over raw start/end logits (`prob=0.15`, `tolerance=2` windows). Tie-break with `val_proxy_total_false_count`, then `val_legacy_pair_f1`, then `val_count_mae`, then average timing MAE.
 
 Since the runtime budget is fixed, you do not need to obsess over absolute training duration inside that budget. Everything is fair game within `train.py`: architecture, optimizer, losses, schedules, batching, parameterization, temporal context, decoding head, and representation consumption.
 
@@ -109,6 +109,7 @@ When the script finishes it should print a summary block like this:
 ```text
 ---
 val_pair_f1:        0.000000
+val_legacy_pair_f1: 0.000000
 val_count_mae:      0.000000
 val_start_mae_ms:   0.0
 val_end_mae_ms:     0.0
@@ -130,7 +131,7 @@ The exact fields may differ by repo and task mode, but the script must print a m
 You can extract the key metrics from the log file with commands like:
 
 ```bash
-grep "^val_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
+grep "^val_pair_f1:\|^val_legacy_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
 ```
 
 If the summary block is missing, the run failed.
@@ -148,7 +149,7 @@ commit	primary_metric	aux_metric	memory_gb	status	description
 Where:
 
 1. `commit` = git commit hash (short, 7 chars)
-2. `primary_metric` = `val_pair_f1` on the held-out subassembly validation split — use `0.000000` for crashes
+2. `primary_metric` = `val_pair_f1` on the held-out subassembly validation split (proxy-threshold macro-F1) — use `0.000000` for crashes
 3. `aux_metric` = `val_count_mae`
 4. `memory_gb` = peak memory in GB, round to `.1f` (divide `peak_vram_mb` by 1024) — use `0.0` for crashes
 5. `status` = `keep`, `discard`, or `crash`
@@ -190,7 +191,7 @@ Redirect everything — do **NOT** use `tee` or let output flood your context.
 5. Read out the results:
 
 ```bash
-grep "^val_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
+grep "^val_pair_f1:\|^val_legacy_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
 ```
 
 6. If the grep output is empty, the run crashed. Read the traceback with:

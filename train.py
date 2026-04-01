@@ -4,7 +4,7 @@ Replay-faithful autoresearch trainer for the Minda subassembly cyclic dataset.
 This branch intentionally focuses on one dataset and one recipe:
 
 - latest `minda-subassembly-tcn` dense-temporal source run
-- exact mar13 stage-0 bidirectional TCN recipe
+- reduced-RF halo16 bidirectional TCN stage-0 recipe
 - exact historical probe phase-1 recipe
 - deterministic 60/40 camera-stratified validation split
 - fixed 5-minute stage-0 budget + fixed 5-minute probe budget
@@ -104,7 +104,7 @@ from src.training.dense_temporal import tcn_train as prod_tcn
 
 LOGGER = logging.getLogger("autoresearch.subassembly.train")
 
-MODEL_FAMILY = "minda_subassembly_mar13_stage0_historical_probe"
+MODEL_FAMILY = "minda_subassembly_reduced_rf_halo16_historical_probe"
 TASK_MODE = "boundary_pairs_single_space"
 SEED = 42
 
@@ -118,6 +118,10 @@ DEFAULT_TCN_STAGE_SECONDS = 300.0
 DEFAULT_PROBE_STAGE_SECONDS = 300.0
 EVAL_TOKEN_CHUNK = 64
 PHASE1_MIN_CHUNK = 8
+VAL_PROXY_THRESHOLD_PROB = 0.15
+VAL_PROXY_TOLERANCE_WINDOWS = 2
+HALO_CONTEXT_WINDOWS = 16
+HALO_CENTER_CHUNK = 32
 
 
 @dataclass(frozen=True)
@@ -161,7 +165,7 @@ class Stage0Config:
     kernel_size: int = 5
     dropout: float = 0.09
     use_layernorm: bool = False
-    dilations: Tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64)
+    dilations: Tuple[int, ...] = (1, 2, 4)
     focal_gamma: float = 2.0
     pos_weight_start_end: float = 12.5
     pos_weight_cycle: float = 1.0
@@ -200,6 +204,14 @@ class SupervisedSegment:
     @property
     def length(self) -> int:
         return int(self.timestamps_ms.shape[0])
+
+
+@dataclass(frozen=True)
+class ValidationEvalSegment:
+    record: SegmentRecord
+    timestamps_ms: np.ndarray
+    logits: np.ndarray
+    mapped_cycles_idx: Tuple[Tuple[int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -773,6 +785,268 @@ def _checkpoint_decode_heads(payload: Dict[str, Any]) -> Tuple[List[str], int]:
     return ["start", "end", "cycle"], 3
 
 
+def _eval_gt_pairs_for_timestamps(
+    record: SegmentRecord,
+    *,
+    timestamps_ms: np.ndarray,
+) -> Tuple[EventPair, ...]:
+    if int(timestamps_ms.shape[0]) <= 0:
+        return ()
+    return tuple(
+        EventPair(start_ms=int(start_ms), end_ms=int(end_ms))
+        for start_ms, end_ms in record.event_pairs_ms
+        if int(start_ms) >= int(timestamps_ms[0]) and int(end_ms) <= int(timestamps_ms[-1])
+    )
+
+
+def _map_eval_cycles_idx(
+    record: SegmentRecord,
+    *,
+    timestamps_ms: np.ndarray,
+    boundary_index_mode: str,
+) -> Tuple[Tuple[int, int], ...]:
+    gt_pairs = _eval_gt_pairs_for_timestamps(record, timestamps_ms=timestamps_ms)
+    mapped_cycles, _ = map_cycles_to_indices(
+        [CycleInterval(start_ms=item.start_ms, end_ms=item.end_ms) for item in gt_pairs],
+        timestamps_ms,
+        boundary_index_mode=str(boundary_index_mode),
+    )
+    return tuple((int(item.start_idx), int(item.end_idx)) for item in mapped_cycles)
+
+
+def _boundary_neighborhood_masks(
+    mapped_cycles_idx: Sequence[Tuple[int, int]],
+    *,
+    total_len: int,
+    radius: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    chunk_len = int(max(0, total_len))
+    start_mask = np.zeros((chunk_len,), dtype=np.float32)
+    end_mask = np.zeros((chunk_len,), dtype=np.float32)
+    tol = int(max(0, radius))
+    for cycle_start, cycle_end in mapped_cycles_idx:
+        s_i = int(cycle_start)
+        e_i = int(cycle_end)
+        for idx in range(max(0, s_i - tol), min(chunk_len, s_i + tol + 1)):
+            start_mask[int(idx)] = 1.0
+        for idx in range(max(0, e_i - tol), min(chunk_len, e_i + tol + 1)):
+            end_mask[int(idx)] = 1.0
+    return start_mask, end_mask
+
+
+def _proxy_start_end_probs(probs: np.ndarray, *, heads: Sequence[str]) -> Tuple[np.ndarray, np.ndarray]:
+    head_names = [str(head).strip().lower() for head in heads]
+    head_to_idx = {name: idx for idx, name in enumerate(head_names)}
+    if "start" in head_to_idx and "end" in head_to_idx:
+        return probs[:, int(head_to_idx["start"])], probs[:, int(head_to_idx["end"])]
+    if "boundary" in head_to_idx:
+        boundary = probs[:, int(head_to_idx["boundary"])]
+        return boundary, boundary
+    raise RuntimeError(f"Unable to resolve start/end heads from checkpoint heads={head_names!r}")
+
+
+def _evaluate_threshold_proxy_segments(
+    segments: Sequence[ValidationEvalSegment],
+    *,
+    heads: Sequence[str],
+    prob_threshold: float = VAL_PROXY_THRESHOLD_PROB,
+    tolerance_windows: int = VAL_PROXY_TOLERANCE_WINDOWS,
+) -> Dict[str, float]:
+    start_pred_total = 0
+    start_pred_valid = 0
+    start_gt_total = 0
+    start_gt_covered = 0
+    start_duplicate_excess = 0
+
+    end_pred_total = 0
+    end_pred_valid = 0
+    end_gt_total = 0
+    end_gt_covered = 0
+    end_duplicate_excess = 0
+
+    threshold = float(prob_threshold)
+    tolerance = int(max(0, tolerance_windows))
+    base_heads = int(len(heads))
+    for segment in segments:
+        if int(segment.logits.shape[0]) != int(segment.timestamps_ms.shape[0]):
+            raise RuntimeError(
+                f"Validation logits length mismatch for {segment.record.segment_id}: "
+                f"{segment.logits.shape[0]} vs {segment.timestamps_ms.shape[0]}"
+            )
+        probs = 1.0 / (1.0 + np.exp(-segment.logits[:, :base_heads]))
+        start_probs, end_probs = _proxy_start_end_probs(probs, heads=heads)
+        start_mask = start_probs > threshold
+        end_mask = end_probs > threshold
+        start_indices = [int(item[0]) for item in segment.mapped_cycles_idx]
+        end_indices = [int(item[1]) for item in segment.mapped_cycles_idx]
+        start_tol_mask, end_tol_mask = _boundary_neighborhood_masks(
+            segment.mapped_cycles_idx,
+            total_len=int(segment.timestamps_ms.shape[0]),
+            radius=int(tolerance),
+        )
+        start_mask_valid = start_tol_mask > 0.5
+        end_mask_valid = end_tol_mask > 0.5
+
+        start_pred_total += int(start_mask.sum())
+        start_pred_valid += int(np.logical_and(start_mask, start_mask_valid).sum())
+        start_gt_total += int(len(start_indices))
+        covered_start = 0
+        for idx in start_indices:
+            lo = max(0, int(idx) - tolerance)
+            hi = min(int(segment.timestamps_ms.shape[0]), int(idx) + tolerance + 1)
+            if bool(start_mask[lo:hi].any()):
+                covered_start += 1
+        start_gt_covered += int(covered_start)
+        start_duplicate_excess += max(
+            0,
+            int(np.logical_and(start_mask, start_mask_valid).sum()) - int(covered_start),
+        )
+
+        end_pred_total += int(end_mask.sum())
+        end_pred_valid += int(np.logical_and(end_mask, end_mask_valid).sum())
+        end_gt_total += int(len(end_indices))
+        covered_end = 0
+        for idx in end_indices:
+            lo = max(0, int(idx) - tolerance)
+            hi = min(int(segment.timestamps_ms.shape[0]), int(idx) + tolerance + 1)
+            if bool(end_mask[lo:hi].any()):
+                covered_end += 1
+        end_gt_covered += int(covered_end)
+        end_duplicate_excess += max(
+            0,
+            int(np.logical_and(end_mask, end_mask_valid).sum()) - int(covered_end),
+        )
+
+    def _f1(*, good_pred: int, total_pred: int, covered_gt: int, total_gt: int) -> Tuple[float, float, float]:
+        precision = float(good_pred) / max(1.0, float(total_pred))
+        recall = float(covered_gt) / max(1.0, float(total_gt))
+        f1 = 0.0 if (precision + recall) <= 0.0 else (2.0 * precision * recall / (precision + recall))
+        return precision, recall, f1
+
+    start_precision, start_recall, start_f1 = _f1(
+        good_pred=int(start_pred_valid),
+        total_pred=int(start_pred_total),
+        covered_gt=int(start_gt_covered),
+        total_gt=int(start_gt_total),
+    )
+    end_precision, end_recall, end_f1 = _f1(
+        good_pred=int(end_pred_valid),
+        total_pred=int(end_pred_total),
+        covered_gt=int(end_gt_covered),
+        total_gt=int(end_gt_total),
+    )
+    return {
+        "val_proxy_threshold_prob": float(threshold),
+        "val_proxy_tolerance_windows": float(tolerance),
+        "val_proxy_start_precision": float(start_precision),
+        "val_proxy_start_recall": float(start_recall),
+        "val_proxy_start_f1": float(start_f1),
+        "val_proxy_start_pred_total": float(start_pred_total),
+        "val_proxy_start_pred_valid": float(start_pred_valid),
+        "val_proxy_start_gt_total": float(start_gt_total),
+        "val_proxy_start_gt_covered": float(start_gt_covered),
+        "val_proxy_start_false_count": float(max(0, start_pred_total - start_pred_valid)),
+        "val_proxy_start_duplicate_excess": float(start_duplicate_excess),
+        "val_proxy_end_precision": float(end_precision),
+        "val_proxy_end_recall": float(end_recall),
+        "val_proxy_end_f1": float(end_f1),
+        "val_proxy_end_pred_total": float(end_pred_total),
+        "val_proxy_end_pred_valid": float(end_pred_valid),
+        "val_proxy_end_gt_total": float(end_gt_total),
+        "val_proxy_end_gt_covered": float(end_gt_covered),
+        "val_proxy_end_false_count": float(max(0, end_pred_total - end_pred_valid)),
+        "val_proxy_end_duplicate_excess": float(end_duplicate_excess),
+        "val_proxy_macro_f1": float(0.5 * (float(start_f1) + float(end_f1))),
+        "val_proxy_total_false_count": float(
+            max(0, start_pred_total - start_pred_valid) + max(0, end_pred_total - end_pred_valid)
+        ),
+    }
+
+
+def _merge_validation_metrics(
+    *,
+    legacy_metrics: Dict[str, float],
+    proxy_metrics: Dict[str, float],
+) -> Dict[str, float]:
+    merged = dict(legacy_metrics)
+    merged["val_legacy_pair_f1"] = float(legacy_metrics["val_pair_f1"])
+    merged["val_legacy_pair_precision"] = float(legacy_metrics["val_pair_precision"])
+    merged["val_legacy_pair_recall"] = float(legacy_metrics["val_pair_recall"])
+    merged.update(proxy_metrics)
+    merged["val_pair_f1"] = float(proxy_metrics["val_proxy_macro_f1"])
+    merged["val_pair_precision"] = float(
+        0.5 * (float(proxy_metrics["val_proxy_start_precision"]) + float(proxy_metrics["val_proxy_end_precision"]))
+    )
+    merged["val_pair_recall"] = float(
+        0.5 * (float(proxy_metrics["val_proxy_start_recall"]) + float(proxy_metrics["val_proxy_end_recall"]))
+    )
+    return merged
+
+
+def _evaluate_validation_segments(
+    segments: Sequence[ValidationEvalSegment],
+    *,
+    decode_heads: Sequence[str],
+) -> Dict[str, float]:
+    predictions: Dict[str, Sequence[EventPair]] = {}
+    for segment in segments:
+        probs = 1.0 / (1.0 + np.exp(-segment.logits[:, : len(decode_heads)]))
+        predictions[segment.record.segment_id] = decode_event_pairs(
+            probs,
+            segment.timestamps_ms,
+            heads=decode_heads,
+        )
+    legacy_metrics = evaluate_predictions(predictions, records=[segment.record for segment in segments])
+    proxy_metrics = _evaluate_threshold_proxy_segments(segments, heads=decode_heads)
+    return _merge_validation_metrics(legacy_metrics=legacy_metrics, proxy_metrics=proxy_metrics)
+
+
+def _predict_halo_logits_from_pooled(
+    model: nn.Module,
+    pooled: np.ndarray,
+    *,
+    device: torch.device,
+    halo_context: int = HALO_CONTEXT_WINDOWS,
+    center_chunk: int = HALO_CENTER_CHUNK,
+) -> np.ndarray:
+    seq_len = int(pooled.shape[0])
+    if seq_len <= 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    feat_dim = int(pooled.shape[1])
+    halo = int(max(0, halo_context))
+    center = int(max(1, center_chunk))
+    outputs: Optional[np.ndarray] = None
+    model.eval()
+    with torch.inference_mode():
+        for center_start in range(0, seq_len, center):
+            center_end = min(seq_len, int(center_start + center))
+            center_len = int(center_end - center_start)
+            block = np.zeros((halo + center_len + halo, feat_dim), dtype=np.float32)
+
+            left_src_lo = max(0, int(center_start - halo))
+            left_src_hi = int(center_start)
+            left_len = max(0, int(left_src_hi - left_src_lo))
+            if left_len > 0:
+                block[int(halo - left_len) : int(halo)] = pooled[left_src_lo:left_src_hi]
+
+            block[int(halo) : int(halo + center_len)] = pooled[center_start:center_end]
+
+            right_src_lo = int(center_end)
+            right_src_hi = min(seq_len, int(center_end + halo))
+            right_len = max(0, int(right_src_hi - right_src_lo))
+            if right_len > 0:
+                block[int(halo + center_len) : int(halo + center_len + right_len)] = pooled[right_src_lo:right_src_hi]
+
+            batch = torch.from_numpy(block).unsqueeze(0).to(device=device)
+            logits = model(batch).squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
+            if outputs is None:
+                outputs = np.zeros((seq_len, int(logits.shape[1])), dtype=np.float32)
+            outputs[center_start:center_end] = logits[int(halo) : int(halo + center_len)]
+    if outputs is None:
+        return np.zeros((seq_len, 0), dtype=np.float32)
+    return outputs
+
+
 def _evaluate_pooled_checkpoint(
     checkpoint_path: Path,
     records: Sequence[SegmentRecord],
@@ -788,19 +1062,30 @@ def _evaluate_pooled_checkpoint(
         device=str(device),
     )
     decode_heads, base_heads = _checkpoint_decode_heads(payload)
-    predictions: Dict[str, Sequence[EventPair]] = {}
+    train_cfg = payload.get("train_cfg", {}) if isinstance(payload.get("train_cfg"), dict) else {}
+    boundary_index_mode = str(train_cfg.get("boundary_index_mode", "ordered_nearest"))
+    eval_segments: List[ValidationEvalSegment] = []
     with torch.inference_mode():
         for record in records:
             arrays = load_segment_arrays(record, representation="pooled_z0", use_eval_span=True)
-            batch = torch.from_numpy(arrays["pooled_z0"]).unsqueeze(0).to(device=device)
-            logits = model(batch).squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
-            probs = 1.0 / (1.0 + np.exp(-logits[:, :base_heads]))
-            predictions[record.segment_id] = decode_event_pairs(
-                probs,
-                arrays["timestamps_ms"],
-                heads=decode_heads,
+            logits = _predict_halo_logits_from_pooled(
+                model,
+                arrays["pooled_z0"],
+                device=device,
             )
-    return evaluate_predictions(predictions, records=list(records))
+            eval_segments.append(
+                ValidationEvalSegment(
+                    record=record,
+                    timestamps_ms=arrays["timestamps_ms"],
+                    logits=logits[:, :base_heads],
+                    mapped_cycles_idx=_map_eval_cycles_idx(
+                        record,
+                        timestamps_ms=arrays["timestamps_ms"],
+                        boundary_index_mode=boundary_index_mode,
+                    ),
+                )
+            )
+    return _evaluate_validation_segments(eval_segments, decode_heads=decode_heads)
 
 
 def _encode_tokens_with_probe(probe: nn.Module, tokens: np.ndarray, *, device: torch.device) -> np.ndarray:
@@ -824,16 +1109,16 @@ def _compute_timing_mae_ms(metrics: Dict[str, float]) -> float:
     return 0.5 * (float(metrics["val_start_mae_ms"]) + float(metrics["val_end_mae_ms"]))
 
 
-def _is_better_metrics(candidate: Dict[str, float], incumbent: Optional[Dict[str, float]]) -> bool:
-    if incumbent is None:
-        return True
+def _primary_pair_f1(metrics: Dict[str, float]) -> float:
+    return float(metrics.get("val_proxy_macro_f1", metrics["val_pair_f1"]))
+
+
+def _legacy_pair_f1(metrics: Dict[str, float]) -> float:
+    return float(metrics.get("val_legacy_pair_f1", metrics["val_pair_f1"]))
+
+
+def _is_better_count_then_timing(candidate: Dict[str, float], incumbent: Dict[str, float]) -> bool:
     eps = 1e-9
-    candidate_f1 = float(candidate["val_pair_f1"])
-    incumbent_f1 = float(incumbent["val_pair_f1"])
-    if candidate_f1 > incumbent_f1 + eps:
-        return True
-    if candidate_f1 < incumbent_f1 - eps:
-        return False
     candidate_count = float(candidate["val_count_mae"])
     incumbent_count = float(incumbent["val_count_mae"])
     if candidate_count < incumbent_count - eps:
@@ -841,6 +1126,32 @@ def _is_better_metrics(candidate: Dict[str, float], incumbent: Optional[Dict[str
     if candidate_count > incumbent_count + eps:
         return False
     return _compute_timing_mae_ms(candidate) < (_compute_timing_mae_ms(incumbent) - eps)
+
+
+def _is_better_metrics(candidate: Dict[str, float], incumbent: Optional[Dict[str, float]]) -> bool:
+    if incumbent is None:
+        return True
+    eps = 1e-9
+    candidate_f1 = _primary_pair_f1(candidate)
+    incumbent_f1 = _primary_pair_f1(incumbent)
+    if candidate_f1 > incumbent_f1 + eps:
+        return True
+    if candidate_f1 < incumbent_f1 - eps:
+        return False
+    if "val_proxy_macro_f1" in candidate and "val_proxy_macro_f1" in incumbent:
+        candidate_false = float(candidate.get("val_proxy_total_false_count", 0.0))
+        incumbent_false = float(incumbent.get("val_proxy_total_false_count", 0.0))
+        if candidate_false < incumbent_false - eps:
+            return True
+        if candidate_false > incumbent_false + eps:
+            return False
+        candidate_legacy = _legacy_pair_f1(candidate)
+        incumbent_legacy = _legacy_pair_f1(incumbent)
+        if candidate_legacy > incumbent_legacy + eps:
+            return True
+        if candidate_legacy < incumbent_legacy - eps:
+            return False
+    return _is_better_count_then_timing(candidate, incumbent)
 
 
 def _stage0_train_cfg_dict(cfg: Stage0Config, *, steps_per_epoch: int) -> Dict[str, Any]:
@@ -1150,9 +1461,11 @@ def _run_stage0(
                 best_source = "current"
 
             LOGGER.info(
-                "stage0 val epoch=%03d source=current pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
+                "stage0 val epoch=%03d source=current pair_f1=%.6f proxy_false=%d legacy_pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
                 epoch,
-                current_metrics["val_pair_f1"],
+                _primary_pair_f1(current_metrics),
+                int(round(float(current_metrics.get("val_proxy_total_false_count", 0.0)))),
+                _legacy_pair_f1(current_metrics),
                 current_metrics["val_count_mae"],
                 _compute_timing_mae_ms(current_metrics),
                 "best" if improved else "keep-prev",
@@ -1184,9 +1497,11 @@ def _run_stage0(
                     best_epoch = int(epoch)
                     best_source = "ema"
                 LOGGER.info(
-                    "stage0 val epoch=%03d source=ema pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
+                    "stage0 val epoch=%03d source=ema pair_f1=%.6f proxy_false=%d legacy_pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
                     epoch,
-                    ema_metrics["val_pair_f1"],
+                    _primary_pair_f1(ema_metrics),
+                    int(round(float(ema_metrics.get("val_proxy_total_false_count", 0.0)))),
+                    _legacy_pair_f1(ema_metrics),
                     ema_metrics["val_count_mae"],
                     _compute_timing_mae_ms(ema_metrics),
                     "best" if improved else "keep-prev",
@@ -1238,6 +1553,7 @@ def _run_stage0(
         {
             "best_epoch": int(best_epoch),
             "best_source": str(best_source),
+            "selection_metric": "threshold_proxy_macro_f1_then_false_count_then_legacy_pair_f1_then_count_mae_then_timing",
             "metrics": final_metrics,
             "timing_mae_ms": float(_compute_timing_mae_ms(final_metrics)),
         },
@@ -1416,14 +1732,18 @@ class HistoricalProbeTrainer:
         self.tcn_payload = torch.load(self.current_tcn_path, map_location="cpu")
         if not isinstance(self.tcn_payload, dict):
             raise RuntimeError(f"Invalid boundary checkpoint payload: {self.current_tcn_path}")
+        train_cfg_ckpt = self.tcn_payload.get("train_cfg", {}) if isinstance(self.tcn_payload.get("train_cfg"), dict) else {}
+        self.boundary_index_mode = str(train_cfg_ckpt.get("boundary_index_mode", "ordered_nearest"))
+        self.ignore_radius = int(train_cfg_ckpt.get("ignore_radius", 1))
+        self.smooth_sigma = float(train_cfg_ckpt.get("smooth_sigma", 0.0))
         self.streams = [
             prod_probe._prepare_stream(
                 name=str(record.segment_id),
                 token_npz=Path(record.feature_path),
                 labels_path=Path(record.label_path),
-                ignore_radius=1,
-                smooth_sigma=0.0,
-                boundary_index_mode="ordered_nearest",
+                ignore_radius=int(self.ignore_radius),
+                smooth_sigma=float(self.smooth_sigma),
+                boundary_index_mode=str(self.boundary_index_mode),
                 feature_cache=self._feature_cache,
             )
             for record in self.spec.split_plan.train_records
@@ -1445,7 +1765,6 @@ class HistoricalProbeTrainer:
                 )(),
             )
         )
-        train_cfg_ckpt = self.tcn_payload.get("train_cfg", {}) if isinstance(self.tcn_payload.get("train_cfg"), dict) else {}
         self.boundary_loss_name = str(train_cfg_ckpt.get("boundary_loss", "focal")).lower()
         self.gamma = float(train_cfg_ckpt.get("gamma", 2.0))
         self.pos_weight_start_end = float(train_cfg_ckpt.get("pos_weight_start_end", 10.0))
@@ -1699,13 +2018,11 @@ class HistoricalProbeTrainer:
     def _predict_pairs_for_record(self, record: SegmentRecord) -> List[EventPair]:
         payload = load_segment_arrays(record, representation="both", use_eval_span=True)
         pooled = self._encode_tokens_full(payload["tokens"])
-        logits = prod_tcn._predict_full(
+        logits = _predict_halo_logits_from_pooled(
             self.tcn,
             pooled,
-            left_ctx=int(self.left_ctx),
-            chunk_len=0,
             device=self.device,
-        )
+        ).astype(np.float32, copy=False)
         probs = 1.0 / (1.0 + np.exp(-logits[:, :3]))
         return decode_event_pairs(probs, payload["timestamps_ms"], heads=("start", "end", "cycle"))
 
@@ -1713,11 +2030,29 @@ class HistoricalProbeTrainer:
     def evaluate(self) -> Dict[str, float]:
         self.probe.eval()
         self.tcn.eval()
-        predictions = {
-            record.segment_id: self._predict_pairs_for_record(record)
-            for record in self.spec.split_plan.val_eval_records
-        }
-        return evaluate_predictions(predictions, records=self.spec.split_plan.val_eval_records)
+        decode_heads, base_heads = _checkpoint_decode_heads(self.tcn_payload)
+        eval_segments: List[ValidationEvalSegment] = []
+        for record in self.spec.split_plan.val_eval_records:
+            payload = load_segment_arrays(record, representation="both", use_eval_span=True)
+            pooled = self._encode_tokens_full(payload["tokens"])
+            logits = _predict_halo_logits_from_pooled(
+                self.tcn,
+                pooled,
+                device=self.device,
+            ).astype(np.float32, copy=False)
+            eval_segments.append(
+                ValidationEvalSegment(
+                    record=record,
+                    timestamps_ms=payload["timestamps_ms"],
+                    logits=logits[:, :base_heads],
+                    mapped_cycles_idx=_map_eval_cycles_idx(
+                        record,
+                        timestamps_ms=payload["timestamps_ms"],
+                        boundary_index_mode=str(self.boundary_index_mode),
+                    ),
+                )
+            )
+        return _evaluate_validation_segments(eval_segments, decode_heads=decode_heads)
 
 
     def save_checkpoints(self, output_dir: Path) -> Tuple[Path, Path]:
@@ -1888,6 +2223,7 @@ def _run_historical_phase1(
                 "best_epoch": int(best_epoch),
                 "best_loss": float(best_loss),
                 "effective_chunk_len": int(chunk_len),
+                "selection_metric": "threshold_proxy_macro_f1_then_false_count_then_legacy_pair_f1_then_count_mae_then_timing",
                 "metrics": metrics,
                 "timing_mae_ms": float(_compute_timing_mae_ms(metrics)),
             },
@@ -1976,6 +2312,7 @@ def main() -> int:
     print(
         f"[tcn] best_epoch={stage0_result.best_epoch} source={stage0_result.best_source} "
         f"pair_f1={stage0_result.metrics['val_pair_f1']:.6f} "
+        f"legacy_pair_f1={_legacy_pair_f1(stage0_result.metrics):.6f} "
         f"count_mae={stage0_result.metrics['val_count_mae']:.6f}"
     )
 
@@ -1991,6 +2328,7 @@ def main() -> int:
     print(
         f"[probe] best_epoch={phase1_result.best_epoch} loss={phase1_result.best_loss:.6f} "
         f"pair_f1={phase1_result.metrics['val_pair_f1']:.6f} "
+        f"legacy_pair_f1={_legacy_pair_f1(phase1_result.metrics):.6f} "
         f"count_mae={phase1_result.metrics['val_count_mae']:.6f} "
         f"chunk_len={phase1_result.effective_chunk_len}"
     )
@@ -2043,6 +2381,7 @@ def main() -> int:
 
     print("---")
     print(f"val_pair_f1:        {phase1_result.metrics['val_pair_f1']:.6f}")
+    print(f"val_legacy_pair_f1: {phase1_result.metrics['val_legacy_pair_f1']:.6f}")
     print(f"val_count_mae:      {phase1_result.metrics['val_count_mae']:.6f}")
     print(f"val_start_mae_ms:   {phase1_result.metrics['val_start_mae_ms']:.1f}")
     print(f"val_end_mae_ms:     {phase1_result.metrics['val_end_mae_ms']:.1f}")

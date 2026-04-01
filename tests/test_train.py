@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 if str(ROOT) not in sys.path:
@@ -35,42 +37,153 @@ def test_stage_budget_split_respects_requested_ratio(monkeypatch) -> None:
     assert probe_seconds == 20.0
 
 
-def test_is_better_metrics_prefers_f1_then_count_then_timing() -> None:
+def test_is_better_metrics_prefers_proxy_then_false_then_legacy_then_count_then_timing() -> None:
     incumbent = {
         "val_pair_f1": 0.90,
+        "val_proxy_macro_f1": 0.90,
+        "val_proxy_total_false_count": 4.0,
+        "val_legacy_pair_f1": 0.70,
         "val_count_mae": 0.20,
         "val_start_mae_ms": 110.0,
         "val_end_mae_ms": 150.0,
     }
-    better_f1 = {
+    better_proxy = {
         "val_pair_f1": 0.91,
+        "val_proxy_macro_f1": 0.91,
+        "val_proxy_total_false_count": 10.0,
+        "val_legacy_pair_f1": 0.60,
+        "val_count_mae": 0.30,
+        "val_start_mae_ms": 200.0,
+        "val_end_mae_ms": 220.0,
+    }
+    better_false = {
+        "val_pair_f1": 0.90,
+        "val_proxy_macro_f1": 0.90,
+        "val_proxy_total_false_count": 3.0,
+        "val_legacy_pair_f1": 0.60,
+        "val_count_mae": 0.30,
+        "val_start_mae_ms": 200.0,
+        "val_end_mae_ms": 220.0,
+    }
+    better_legacy = {
+        "val_pair_f1": 0.90,
+        "val_proxy_macro_f1": 0.90,
+        "val_proxy_total_false_count": 4.0,
+        "val_legacy_pair_f1": 0.71,
         "val_count_mae": 0.30,
         "val_start_mae_ms": 200.0,
         "val_end_mae_ms": 220.0,
     }
     better_count = {
         "val_pair_f1": 0.90,
+        "val_proxy_macro_f1": 0.90,
+        "val_proxy_total_false_count": 4.0,
+        "val_legacy_pair_f1": 0.70,
         "val_count_mae": 0.10,
         "val_start_mae_ms": 180.0,
         "val_end_mae_ms": 200.0,
     }
     better_timing = {
         "val_pair_f1": 0.90,
+        "val_proxy_macro_f1": 0.90,
+        "val_proxy_total_false_count": 4.0,
+        "val_legacy_pair_f1": 0.70,
         "val_count_mae": 0.20,
         "val_start_mae_ms": 90.0,
         "val_end_mae_ms": 120.0,
     }
     worse = {
         "val_pair_f1": 0.89,
+        "val_proxy_macro_f1": 0.89,
+        "val_proxy_total_false_count": 0.0,
+        "val_legacy_pair_f1": 0.99,
+        "val_count_mae": 0.01,
+        "val_start_mae_ms": 10.0,
+        "val_end_mae_ms": 20.0,
+    }
+
+    assert train._is_better_metrics(better_proxy, incumbent) is True
+    assert train._is_better_metrics(better_false, incumbent) is True
+    assert train._is_better_metrics(better_legacy, incumbent) is True
+    assert train._is_better_metrics(better_count, incumbent) is True
+    assert train._is_better_metrics(better_timing, incumbent) is True
+    assert train._is_better_metrics(worse, incumbent) is False
+
+
+def test_is_better_metrics_falls_back_to_legacy_pair_f1_then_count_then_timing() -> None:
+    incumbent = {
+        "val_pair_f1": 0.80,
+        "val_count_mae": 0.20,
+        "val_start_mae_ms": 110.0,
+        "val_end_mae_ms": 150.0,
+    }
+    better_f1 = {
+        "val_pair_f1": 0.81,
+        "val_count_mae": 0.30,
+        "val_start_mae_ms": 200.0,
+        "val_end_mae_ms": 220.0,
+    }
+    worse_f1 = {
+        "val_pair_f1": 0.79,
         "val_count_mae": 0.01,
         "val_start_mae_ms": 10.0,
         "val_end_mae_ms": 20.0,
     }
 
     assert train._is_better_metrics(better_f1, incumbent) is True
-    assert train._is_better_metrics(better_count, incumbent) is True
-    assert train._is_better_metrics(better_timing, incumbent) is True
-    assert train._is_better_metrics(worse, incumbent) is False
+    assert train._is_better_metrics(worse_f1, incumbent) is False
+
+
+def test_threshold_proxy_eval_promotes_macro_f1_and_counts_false_fires() -> None:
+    record = train.SegmentRecord(
+        segment_id="seg-1",
+        split="val",
+        video_id="vid-1",
+        camera_id="cam-1",
+        source_run_dir="/tmp/source",
+        feature_path="/tmp/feature.npz",
+        label_path="/tmp/label.json",
+        pooler_checkpoint="/tmp/pooler.pt",
+        pooler_sha="pooler",
+        embedding_dim=4,
+        token_dim=4,
+        tokens_per_window=1,
+        num_total_windows=5,
+        fps=1.0,
+        supervised_start_ms=0,
+        supervised_end_ms=400,
+        supervised_start_idx=0,
+        supervised_end_idx=4,
+        eval_start_ms=0,
+        eval_end_ms=400,
+        eval_start_idx=0,
+        eval_end_idx=4,
+        event_pairs_ms=((100, 300),),
+    )
+    logits = np.asarray(
+        [
+            [-4.0, -4.0, -4.0],
+            [4.0, -4.0, -4.0],
+            [4.0, -4.0, -4.0],
+            [-4.0, 4.0, -4.0],
+            [-4.0, -4.0, -4.0],
+        ],
+        dtype=np.float32,
+    )
+    segment = train.ValidationEvalSegment(
+        record=record,
+        timestamps_ms=np.asarray([0, 100, 200, 300, 400], dtype=np.int64),
+        logits=logits,
+        mapped_cycles_idx=((1, 3),),
+    )
+
+    metrics = train._evaluate_threshold_proxy_segments([segment], heads=("start", "end", "cycle"))
+
+    assert metrics["val_proxy_macro_f1"] == 1.0
+    assert metrics["val_proxy_start_f1"] == 1.0
+    assert metrics["val_proxy_end_f1"] == 1.0
+    assert metrics["val_proxy_total_false_count"] == 0.0
+    assert metrics["val_proxy_start_duplicate_excess"] == 1.0
 
 
 def test_resolve_left_context_respects_bidirectional_and_hybrid() -> None:
