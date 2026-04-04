@@ -295,7 +295,8 @@ class Stage0BoundaryModel(nn.Module):
                 base_heads=3,
             )
         )
-        self.se = SEBlock(int(cfg.hidden_dim))
+        self.se_mid = SEBlock(int(cfg.hidden_dim))
+        self.se_final = SEBlock(int(cfg.hidden_dim))
         self.state_head = nn.Conv1d(int(cfg.hidden_dim), 4, kernel_size=1)
 
     def _forward_main_from_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
@@ -311,8 +312,13 @@ class Stage0BoundaryModel(nn.Module):
             raise ValueError(f"Expected [B, T, D], got {tuple(batch.shape)}")
         hidden = batch.transpose(1, 2)
         hidden = self.tcn.in_proj(hidden)
-        hidden = self.tcn.blocks(hidden)
-        hidden = self.se(hidden)
+        n_blocks = len(self.tcn.blocks)
+        mid_point = n_blocks // 2
+        for i, block in enumerate(self.tcn.blocks):
+            hidden = block(hidden)
+            if i == mid_point - 1:
+                hidden = self.se_mid(hidden)
+        hidden = self.se_final(hidden)
         logits3 = self._forward_main_from_hidden(hidden).transpose(1, 2)
         logits4 = self.state_head(hidden).transpose(1, 2)
         features = hidden.transpose(1, 2)
