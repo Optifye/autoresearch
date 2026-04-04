@@ -171,11 +171,11 @@ class Stage0Config:
     weight_decay: float = 1e-4
     warmup_ratio: float = 0.05
     final_lr_frac: float = 0.2
-    hidden_dim: int = 128
+    hidden_dim: int = 256
     kernel_size: int = 5
     dropout: float = 0.1
     use_layernorm: bool = True
-    dilations: Tuple[int, ...] = (1, 2, 4)
+    dilations: Tuple[int, ...] = (1, 2, 4, 8)
     focal_gamma: float = 2.0
     pos_weight_start_end: float = 10.0
     pos_weight_cycle: float = 1.0
