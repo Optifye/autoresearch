@@ -4,10 +4,10 @@ Replay-faithful autoresearch trainer for the Minda subassembly cyclic dataset.
 This branch intentionally focuses on one dataset and one recipe:
 
 - latest `minda-subassembly-tcn` dense-temporal source run
-- reduced-RF halo16 bidirectional TCN stage-0 recipe
-- exact historical probe phase-1 recipe
+- hybrid halo16 bidirectional TCN stage-0 recipe
+- historical probe phase-1 path kept intact but defaulted to zero budget
 - deterministic 60/40 camera-stratified validation split
-- fixed 5-minute stage-0 budget + fixed 5-minute probe budget
+- fixed 5-minute pure TCN budget by default
 
 The goal here is not to redesign the dense-temporal stack. It is to make the
 validated recipe easy to rerun inside a single standalone `train.py`.
@@ -28,6 +28,7 @@ import time
 import types
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -104,7 +105,7 @@ from src.training.dense_temporal import tcn_train as prod_tcn
 
 LOGGER = logging.getLogger("autoresearch.subassembly.train")
 
-MODEL_FAMILY = "minda_subassembly_reduced_rf_halo16_historical_probe"
+MODEL_FAMILY = "minda_subassembly_hybrid_halo16_stage0_optional_historical_probe"
 TASK_MODE = "boundary_pairs_single_space"
 SEED = 42
 
@@ -115,13 +116,22 @@ DEFAULT_CACHE_DIR = Path("/tmp/autoresearch-minda-subassembly-cache")
 DEFAULT_OUTPUT_ROOT = Path("/tmp/autoresearch_minda_subassembly_replay_runs")
 
 DEFAULT_TCN_STAGE_SECONDS = 300.0
-DEFAULT_PROBE_STAGE_SECONDS = 300.0
+DEFAULT_PROBE_STAGE_SECONDS = 0.0
 EVAL_TOKEN_CHUNK = 64
 PHASE1_MIN_CHUNK = 8
 VAL_PROXY_THRESHOLD_PROB = 0.15
 VAL_PROXY_TOLERANCE_WINDOWS = 2
 HALO_CONTEXT_WINDOWS = 16
-HALO_CENTER_CHUNK = 32
+HALO_CENTER_CHUNK = 256
+STATE_IDLE = 0
+STATE_START = 1
+STATE_END = 2
+STATE_WORK = 3
+STATE_NAMES = ("idle", "start", "end", "work")
+STATE_AUX_WEIGHT = 0.1
+STATE_SHOULDER_RADIUS = 0
+STATE_SHOULDER_WEIGHT = 0.5
+STAGE0_MATERIAL_DEGRADE_EPS = 0.01
 
 
 @dataclass(frozen=True)
@@ -153,27 +163,27 @@ class SpaceSpec:
 class Stage0Config:
     seed: int = 42
     epochs: int = 200
-    val_every_epochs: int = 4
-    batch_size: int = 28
+    val_every_epochs: int = 5
+    batch_size: int = 32
     chunk_len: int = 256
     grad_accum_steps: int = 1
     lr: float = 1e-3
     weight_decay: float = 1e-4
     warmup_ratio: float = 0.05
     final_lr_frac: float = 0.2
-    hidden_dim: int = 320
+    hidden_dim: int = 128
     kernel_size: int = 5
-    dropout: float = 0.09
-    use_layernorm: bool = False
-    dilations: Tuple[int, ...] = (1, 2, 4, 8)
+    dropout: float = 0.1
+    use_layernorm: bool = True
+    dilations: Tuple[int, ...] = (1, 2, 4)
     focal_gamma: float = 2.0
-    pos_weight_start_end: float = 12.5
+    pos_weight_start_end: float = 10.0
     pos_weight_cycle: float = 1.0
     cycle_loss_weight: float = 0.5
     aux_loss_weight: float = 0.1
     transition_consistency_weight: float = 0.15
     neg_margin: float = 0.2
-    ignore_radius: int = 3
+    ignore_radius: int = 1
     smooth_sigma: float = 0.0
     ema_enabled: bool = True
     ema_decay: float = 0.9998
@@ -199,6 +209,9 @@ class SupervisedSegment:
     y_cycle: np.ndarray
     mask_start_end: np.ndarray
     pooled_z0: np.ndarray
+    y_state: np.ndarray
+    state_weight: np.ndarray
+    mapped_cycles_idx: Tuple[Tuple[int, int], ...]
     gt_pairs: Tuple[EventPair, ...]
 
     @property
@@ -221,6 +234,9 @@ class Stage0Result:
     metrics_path: Path
     history_path: Path
     metrics: Dict[str, float]
+    halo_metrics: Dict[str, float]
+    fullseq_metrics: Dict[str, float]
+    proxy_metrics: Dict[str, float]
     best_epoch: int
     best_source: str
     steps_per_epoch: int
@@ -240,6 +256,7 @@ class Phase1Result:
     best_loss: float
     effective_chunk_len: int
     elapsed_seconds: float
+    skipped: bool = False
 
 
 class Stage0BoundaryModel(nn.Module):
@@ -260,10 +277,26 @@ class Stage0BoundaryModel(nn.Module):
                 base_heads=3,
             )
         )
+        self.state_head = nn.Conv1d(int(cfg.hidden_dim), 4, kernel_size=1)
 
-    def forward(self, batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        logits = self.tcn(batch)
-        return logits, batch
+    def _forward_main_from_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
+        if self.tcn.base_refines is not None and self.tcn.base_out is not None:
+            outputs = [head(refine(hidden)) for refine, head in zip(self.tcn.base_refines, self.tcn.base_out)]
+            if self.tcn.out_proj is not None:
+                outputs.append(self.tcn.out_proj(hidden))
+            return torch.cat(outputs, dim=1)
+        return self.tcn.out_proj(hidden)
+
+    def forward(self, batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if batch.ndim != 3:
+            raise ValueError(f"Expected [B, T, D], got {tuple(batch.shape)}")
+        hidden = batch.transpose(1, 2)
+        hidden = self.tcn.in_proj(hidden)
+        hidden = self.tcn.blocks(hidden)
+        logits3 = self._forward_main_from_hidden(hidden).transpose(1, 2)
+        logits4 = self.state_head(hidden).transpose(1, 2)
+        features = hidden.transpose(1, 2)
+        return logits3, logits4, features
 
 
 def _json_default(value: Any) -> Any:
@@ -340,7 +373,7 @@ def _resolve_cache_root() -> Path:
 def resolve_time_budget_seconds() -> float:
     raw = os.getenv("AUTORESEARCH_TIME_BUDGET_SECONDS", "").strip()
     if not raw:
-        return float(TIME_BUDGET)
+        return float(DEFAULT_TCN_STAGE_SECONDS + DEFAULT_PROBE_STAGE_SECONDS)
     return max(1.0, float(raw))
 
 
@@ -356,6 +389,9 @@ def resolve_stage_budget_seconds(total_budget_seconds: float) -> Tuple[float, fl
     probe_raw = os.getenv("AUTORESEARCH_PROBE_STAGE_SECONDS", "").strip()
     tcn_seconds = float(tcn_raw) if tcn_raw else float(DEFAULT_TCN_STAGE_SECONDS)
     probe_seconds = float(probe_raw) if probe_raw else float(DEFAULT_PROBE_STAGE_SECONDS)
+    total_raw = os.getenv("AUTORESEARCH_TIME_BUDGET_SECONDS", "").strip()
+    if not total_raw:
+        return float(tcn_seconds), float(probe_seconds)
     requested = max(1e-6, float(tcn_seconds + probe_seconds))
     scale = float(total_budget_seconds) / float(requested)
     return float(tcn_seconds * scale), float(probe_seconds * scale)
@@ -571,14 +607,61 @@ def _count_trainable_params(module: nn.Module) -> int:
     return int(sum(int(param.numel()) for param in module.parameters() if param.requires_grad))
 
 
+@lru_cache(maxsize=512)
+def _load_feature_arrays_cached(feature_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    with np.load(Path(feature_path)) as data:
+        timestamps_ms = np.asarray(data["timestamps_ms"], dtype=np.int64)
+        embeddings = np.asarray(data["embeddings"], dtype=np.float32)
+    return timestamps_ms, embeddings
+
+
+def _build_state_targets(
+    *,
+    length: int,
+    mapped_cycles_idx: Sequence[Tuple[int, int]],
+    shoulder_radius: int,
+    shoulder_weight: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    y_state = np.full((int(length),), int(STATE_IDLE), dtype=np.int64)
+    weights = np.ones((int(length),), dtype=np.float32)
+    radius = int(max(0, shoulder_radius))
+    shoulder_w = float(max(0.0, min(1.0, shoulder_weight)))
+    for start_idx, end_idx in mapped_cycles_idx:
+        s_i = int(start_idx)
+        e_i = int(end_idx)
+        if s_i < 0 or e_i < 0 or s_i >= int(length) or e_i >= int(length) or e_i < s_i:
+            continue
+        y_state[s_i : e_i + 1] = int(STATE_WORK)
+        y_state[s_i] = int(STATE_START)
+        y_state[e_i] = int(STATE_END)
+        if radius > 0:
+            for idx in range(max(0, s_i - radius), min(int(length), s_i + radius + 1)):
+                if idx != s_i:
+                    weights[idx] = min(weights[idx], shoulder_w)
+            for idx in range(max(0, e_i - radius), min(int(length), e_i + radius + 1)):
+                if idx != e_i:
+                    weights[idx] = min(weights[idx], shoulder_w)
+    return y_state, weights
+
+
 def _build_supervised_segment(
     record: SegmentRecord,
     *,
     use_eval_span: bool,
     cfg: Stage0Config,
 ) -> SupervisedSegment:
-    payload = load_segment_arrays(record, representation="pooled_z0", use_eval_span=use_eval_span)
-    timestamps_ms = payload["timestamps_ms"].astype(np.int64, copy=False)
+    if use_eval_span and record.eval_start_idx is not None and record.eval_end_idx is not None:
+        global_start_idx = int(record.eval_start_idx)
+        global_end_idx = int(record.eval_end_idx)
+    else:
+        global_start_idx = int(record.supervised_start_idx)
+        global_end_idx = int(record.supervised_end_idx)
+    if global_end_idx < global_start_idx:
+        raise ValueError(f"Invalid slice for {record.segment_id}: {global_start_idx}>{global_end_idx}")
+
+    all_timestamps_ms, all_embeddings = _load_feature_arrays_cached(str(Path(record.feature_path).expanduser().resolve()))
+    timestamps_ms = all_timestamps_ms[global_start_idx : global_end_idx + 1].astype(np.int64, copy=False)
+    pooled_z0 = all_embeddings[global_start_idx : global_end_idx + 1].astype(np.float32, copy=False)
     gt_pairs = tuple(
         EventPair(start_ms=int(start_ms), end_ms=int(end_ms))
         for start_ms, end_ms in record.event_pairs_ms
@@ -595,16 +678,26 @@ def _build_supervised_segment(
         ignore_radius=int(cfg.ignore_radius),
         smooth_sigma=float(cfg.smooth_sigma),
     )
+    mapped_pairs_idx = tuple((int(item.start_idx), int(item.end_idx)) for item in mapped_cycles)
+    y_state, state_weight = _build_state_targets(
+        length=int(timestamps_ms.shape[0]),
+        mapped_cycles_idx=mapped_pairs_idx,
+        shoulder_radius=int(STATE_SHOULDER_RADIUS),
+        shoulder_weight=float(STATE_SHOULDER_WEIGHT),
+    )
     return SupervisedSegment(
         record=record,
-        global_start_idx=int(payload["slice_start_idx"]),
-        global_end_idx=int(payload["slice_end_idx"]),
+        global_start_idx=int(global_start_idx),
+        global_end_idx=int(global_end_idx),
         timestamps_ms=timestamps_ms,
         y_start=y_start.astype(np.float32, copy=False),
         y_end=y_end.astype(np.float32, copy=False),
         y_cycle=y_cycle.astype(np.float32, copy=False),
         mask_start_end=mask_start_end.astype(np.float32, copy=False),
-        pooled_z0=payload["pooled_z0"].astype(np.float32, copy=False),
+        pooled_z0=pooled_z0,
+        y_state=y_state.astype(np.int64, copy=False),
+        state_weight=state_weight.astype(np.float32, copy=False),
+        mapped_cycles_idx=mapped_pairs_idx,
         gt_pairs=gt_pairs,
     )
 
@@ -613,6 +706,16 @@ def _build_train_sampling_weights(segments: Sequence[SupervisedSegment]) -> np.n
     if not segments:
         return np.zeros((0,), dtype=np.float64)
     return np.asarray([math.sqrt(max(1, len(segment.gt_pairs))) for segment in segments], dtype=np.float64)
+
+
+def _build_state_class_weights(segments: Sequence[SupervisedSegment]) -> np.ndarray:
+    counts = np.zeros((4,), dtype=np.float64)
+    for segment in segments:
+        counts += np.bincount(segment.y_state.astype(np.int64, copy=False), minlength=4).astype(np.float64)
+    counts = np.maximum(counts, 1.0)
+    inv = 1.0 / np.sqrt(counts)
+    inv = inv / float(np.mean(inv))
+    return inv.astype(np.float32, copy=False)
 
 
 def _choose_train_segments(
@@ -647,6 +750,35 @@ def _sample_chunk_bounds(length: int, chunk_len: int, rng: np.random.RandomState
     return int(start), int(end)
 
 
+def _fill_halo_row(
+    row_np: np.ndarray,
+    *,
+    segment: SupervisedSegment,
+    center_lo: int,
+    center_hi: int,
+    halo: int,
+) -> None:
+    _, all_embeddings = _load_feature_arrays_cached(str(Path(segment.record.feature_path).expanduser().resolve()))
+    total_windows = int(all_embeddings.shape[0])
+    global_center_lo = int(segment.global_start_idx + center_lo)
+    global_center_hi = int(segment.global_start_idx + center_hi)
+    center_len = int(center_hi - center_lo + 1)
+
+    row_np[int(halo) : int(halo + center_len)] = all_embeddings[global_center_lo : global_center_hi + 1]
+
+    left_src_lo = max(0, int(global_center_lo - halo))
+    left_src_hi = int(global_center_lo)
+    left_len = max(0, int(left_src_hi - left_src_lo))
+    if left_len > 0:
+        row_np[int(halo - left_len) : int(halo)] = all_embeddings[left_src_lo:left_src_hi]
+
+    right_src_lo = int(global_center_hi + 1)
+    right_src_hi = min(total_windows, int(global_center_hi + 1 + halo))
+    right_len = max(0, int(right_src_hi - right_src_lo))
+    if right_len > 0:
+        row_np[int(halo + center_len) : int(halo + center_len + right_len)] = all_embeddings[right_src_lo:right_src_hi]
+
+
 def _collate_train_batch(
     segments: Sequence[SupervisedSegment],
     *,
@@ -655,7 +787,7 @@ def _collate_train_batch(
     rng: np.random.RandomState,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     chosen: List[Tuple[SupervisedSegment, int, int]] = []
-    max_len = 0
+    max_center = 0
     for segment in _choose_train_segments(
         segments,
         sampling_weights=sampling_weights,
@@ -664,25 +796,42 @@ def _collate_train_batch(
     ):
         lo, hi = _sample_chunk_bounds(segment.length, int(cfg.chunk_len), rng)
         chosen.append((segment, lo, hi))
-        max_len = max(max_len, int(hi - lo + 1))
+        max_center = max(max_center, int(hi - lo + 1))
 
-    feature_batch = torch.zeros((len(chosen), max_len, segments[0].record.embedding_dim), dtype=torch.float32)
-    y_start = torch.zeros((len(chosen), max_len), dtype=torch.float32)
-    y_end = torch.zeros((len(chosen), max_len), dtype=torch.float32)
-    y_cycle = torch.zeros((len(chosen), max_len), dtype=torch.float32)
-    mask_start_end = torch.zeros((len(chosen), max_len), dtype=torch.float32)
-    valid_mask = torch.zeros((len(chosen), max_len), dtype=torch.float32)
+    total_len = int(HALO_CONTEXT_WINDOWS + max_center + HALO_CONTEXT_WINDOWS)
+    feature_batch = torch.zeros((len(chosen), total_len, segments[0].record.embedding_dim), dtype=torch.float32)
+    y_state = torch.zeros((len(chosen), total_len), dtype=torch.long)
+    state_weight = torch.zeros((len(chosen), total_len), dtype=torch.float32)
+    y_cycle = torch.zeros((len(chosen), total_len), dtype=torch.float32)
+    y_start = torch.zeros((len(chosen), total_len), dtype=torch.float32)
+    y_end = torch.zeros((len(chosen), total_len), dtype=torch.float32)
+    mask_start_end = torch.zeros((len(chosen), total_len), dtype=torch.float32)
+    valid_mask = torch.zeros((len(chosen), total_len), dtype=torch.float32)
 
     for row, (segment, lo, hi) in enumerate(chosen):
-        size = int(hi - lo + 1)
-        feature_batch[row, :size] = torch.from_numpy(segment.pooled_z0[lo : hi + 1])
-        y_start[row, :size] = torch.from_numpy(segment.y_start[lo : hi + 1])
-        y_end[row, :size] = torch.from_numpy(segment.y_end[lo : hi + 1])
-        y_cycle[row, :size] = torch.from_numpy(segment.y_cycle[lo : hi + 1])
-        mask_start_end[row, :size] = torch.from_numpy(segment.mask_start_end[lo : hi + 1])
-        valid_mask[row, :size] = 1.0
+        center_len = int(hi - lo + 1)
+        row_np = np.zeros((total_len, segment.record.embedding_dim), dtype=np.float32)
+        _fill_halo_row(
+            row_np,
+            segment=segment,
+            center_lo=lo,
+            center_hi=hi,
+            halo=int(HALO_CONTEXT_WINDOWS),
+        )
+        feature_batch[row] = torch.from_numpy(row_np)
+        start = int(HALO_CONTEXT_WINDOWS)
+        stop = int(HALO_CONTEXT_WINDOWS + center_len)
+        y_state[row, start:stop] = torch.from_numpy(segment.y_state[lo : hi + 1])
+        state_weight[row, start:stop] = torch.from_numpy(segment.state_weight[lo : hi + 1])
+        y_cycle[row, start:stop] = torch.from_numpy(segment.y_cycle[lo : hi + 1])
+        y_start[row, start:stop] = torch.from_numpy(segment.y_start[lo : hi + 1])
+        y_end[row, start:stop] = torch.from_numpy(segment.y_end[lo : hi + 1])
+        mask_start_end[row, start:stop] = torch.from_numpy(segment.mask_start_end[lo : hi + 1])
+        valid_mask[row, start:stop] = 1.0
 
     targets = {
+        "y_state": y_state,
+        "state_weight": state_weight,
         "y_start": y_start,
         "y_end": y_end,
         "y_cycle": y_cycle,
@@ -718,6 +867,40 @@ def _compute_transition_consistency_loss(logits: torch.Tensor, targets: Dict[str
     start_loss = masked_mean((start_probs - start_from_cycle).square(), transition_mask)
     end_loss = masked_mean((end_probs - end_from_cycle).square(), transition_mask)
     return 0.5 * (start_loss + end_loss)
+
+
+def _compute_hybrid_stage0_loss(
+    logits3: torch.Tensor,
+    features: torch.Tensor,
+    logits4: torch.Tensor,
+    targets: Dict[str, torch.Tensor],
+    *,
+    cfg: Stage0Config,
+    class_weights: torch.Tensor,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    logits4 = logits4.float()
+    device = logits4.device
+    y_state = targets["y_state"].to(device=device)
+    state_weight = targets["state_weight"].to(device=device) * targets["valid_mask"].to(device=device)
+    ce = F.cross_entropy(
+        logits4.transpose(1, 2),
+        y_state,
+        weight=class_weights.to(device=device),
+        reduction="none",
+    )
+    state_loss = masked_mean(ce, state_weight)
+    base_total, base_stats = _compute_stage0_loss(logits3, features, targets, cfg=cfg)
+    total = base_total + (float(cfg.aux_loss_weight) * state_loss)
+    stats = {
+        "loss_total": float(total.detach().item()),
+        "loss_boundary": float(base_total.detach().item()),
+        "loss_start": float(base_stats["loss_start"]),
+        "loss_end": float(base_stats["loss_end"]),
+        "loss_cycle": float(base_stats["loss_cycle"]),
+        "loss_transition": float(base_stats["loss_transition"]),
+        "loss_state": float(state_loss.detach().item()),
+    }
+    return total, stats
 
 
 def _compute_stage0_loss(
@@ -776,6 +959,276 @@ def _compute_stage0_loss(
         "loss_transition": float(transition_loss.detach().item()),
     }
     return total, stats
+
+
+def _predict_halo_segment_logits(
+    model: Stage0BoundaryModel,
+    segment: SupervisedSegment,
+    *,
+    device: torch.device,
+) -> np.ndarray:
+    chunks: List[np.ndarray] = []
+    with torch.inference_mode():
+        for center_lo in range(0, int(segment.length), int(HALO_CENTER_CHUNK)):
+            center_hi = min(int(segment.length) - 1, int(center_lo + HALO_CENTER_CHUNK - 1))
+            center_len = int(center_hi - center_lo + 1)
+            row_np = np.zeros((int(HALO_CONTEXT_WINDOWS + center_len + HALO_CONTEXT_WINDOWS), segment.record.embedding_dim), dtype=np.float32)
+            _fill_halo_row(
+                row_np,
+                segment=segment,
+                center_lo=center_lo,
+                center_hi=center_hi,
+                halo=int(HALO_CONTEXT_WINDOWS),
+            )
+            batch = torch.from_numpy(row_np).unsqueeze(0).to(device=device)
+            logits3, _logits4, _features = model(batch)
+            logits3 = logits3.squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
+            chunks.append(logits3[int(HALO_CONTEXT_WINDOWS) : int(HALO_CONTEXT_WINDOWS + center_len)])
+    if not chunks:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.concatenate(chunks, axis=0)
+
+
+def _predict_fullseq_logits(
+    model: Stage0BoundaryModel,
+    segment: SupervisedSegment,
+    *,
+    device: torch.device,
+) -> np.ndarray:
+    with torch.inference_mode():
+        batch = torch.from_numpy(_numpy_writable(segment.pooled_z0)).unsqueeze(0).to(device=device)
+        logits3, _logits4, _features = model(batch)
+        return logits3.squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
+
+
+def _evaluate_from_main_logits(
+    logits_by_segment: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    *,
+    records: Sequence[SegmentRecord],
+) -> Dict[str, float]:
+    predictions: Dict[str, Sequence[EventPair]] = {}
+    for record in records:
+        timestamps_ms, logits3 = logits_by_segment[record.segment_id]
+        probs3 = 1.0 / (1.0 + np.exp(-np.asarray(logits3[:, :3], dtype=np.float32)))
+        predictions[record.segment_id] = decode_event_pairs(
+            probs3,
+            timestamps_ms,
+            heads=("start", "end", "cycle"),
+        )
+    return evaluate_predictions(predictions, records=list(records))
+
+
+def _evaluate_stage0_halo_model(
+    model: Stage0BoundaryModel,
+    segments: Sequence[SupervisedSegment],
+    *,
+    device: torch.device,
+) -> Dict[str, float]:
+    logits_by_segment: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for segment in segments:
+        logits_by_segment[segment.record.segment_id] = (
+            segment.timestamps_ms,
+            _predict_halo_segment_logits(model, segment, device=device),
+        )
+    return _evaluate_from_main_logits(logits_by_segment, records=[segment.record for segment in segments])
+
+
+def _evaluate_stage0_fullseq_model(
+    model: Stage0BoundaryModel,
+    segments: Sequence[SupervisedSegment],
+    *,
+    device: torch.device,
+) -> Dict[str, float]:
+    logits_by_segment: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for segment in segments:
+        logits_by_segment[segment.record.segment_id] = (
+            segment.timestamps_ms,
+            _predict_fullseq_logits(model, segment, device=device),
+        )
+    return _evaluate_from_main_logits(logits_by_segment, records=[segment.record for segment in segments])
+
+
+def _evaluate_stage0_threshold_proxy(
+    model: Stage0BoundaryModel,
+    segments: Sequence[SupervisedSegment],
+    *,
+    device: torch.device,
+    prob_threshold: float = VAL_PROXY_THRESHOLD_PROB,
+    tolerance_windows: int = VAL_PROXY_TOLERANCE_WINDOWS,
+) -> Dict[str, float]:
+    start_pred_total = 0
+    start_pred_valid = 0
+    start_gt_total = 0
+    start_gt_covered = 0
+    start_duplicate_excess = 0
+    end_pred_total = 0
+    end_pred_valid = 0
+    end_gt_total = 0
+    end_gt_covered = 0
+    end_duplicate_excess = 0
+
+    threshold = float(prob_threshold)
+    tolerance = int(max(0, tolerance_windows))
+    for segment in segments:
+        logits3 = _predict_halo_segment_logits(model, segment, device=device)
+        probs3 = 1.0 / (1.0 + np.exp(-np.asarray(logits3[:, :3], dtype=np.float32)))
+        start_mask = probs3[:, 0] > threshold
+        end_mask = probs3[:, 1] > threshold
+
+        start_tol_mask, end_tol_mask = _boundary_neighborhood_masks(
+            segment.mapped_cycles_idx,
+            total_len=int(segment.length),
+            radius=int(tolerance),
+        )
+        start_mask_valid = start_tol_mask > 0.5
+        end_mask_valid = end_tol_mask > 0.5
+        start_indices = [int(item[0]) for item in segment.mapped_cycles_idx]
+        end_indices = [int(item[1]) for item in segment.mapped_cycles_idx]
+
+        start_pred_total += int(start_mask.sum())
+        start_pred_valid += int(np.logical_and(start_mask, start_mask_valid).sum())
+        start_gt_total += int(len(start_indices))
+        covered_start = 0
+        for idx in start_indices:
+            lo = max(0, int(idx) - tolerance)
+            hi = min(int(segment.length), int(idx) + tolerance + 1)
+            if bool(start_mask[lo:hi].any()):
+                covered_start += 1
+        start_gt_covered += int(covered_start)
+        start_duplicate_excess += max(0, int(np.logical_and(start_mask, start_mask_valid).sum()) - int(covered_start))
+
+        end_pred_total += int(end_mask.sum())
+        end_pred_valid += int(np.logical_and(end_mask, end_mask_valid).sum())
+        end_gt_total += int(len(end_indices))
+        covered_end = 0
+        for idx in end_indices:
+            lo = max(0, int(idx) - tolerance)
+            hi = min(int(segment.length), int(idx) + tolerance + 1)
+            if bool(end_mask[lo:hi].any()):
+                covered_end += 1
+        end_gt_covered += int(covered_end)
+        end_duplicate_excess += max(0, int(np.logical_and(end_mask, end_mask_valid).sum()) - int(covered_end))
+
+    def _f1(*, good_pred: int, total_pred: int, covered_gt: int, total_gt: int) -> Tuple[float, float, float]:
+        precision = float(good_pred) / max(1.0, float(total_pred))
+        recall = float(covered_gt) / max(1.0, float(total_gt))
+        f1 = 0.0 if (precision + recall) <= 0.0 else (2.0 * precision * recall / (precision + recall))
+        return precision, recall, f1
+
+    start_precision, start_recall, start_f1 = _f1(
+        good_pred=int(start_pred_valid),
+        total_pred=int(start_pred_total),
+        covered_gt=int(start_gt_covered),
+        total_gt=int(start_gt_total),
+    )
+    end_precision, end_recall, end_f1 = _f1(
+        good_pred=int(end_pred_valid),
+        total_pred=int(end_pred_total),
+        covered_gt=int(end_gt_covered),
+        total_gt=int(end_gt_total),
+    )
+    return {
+        "val_proxy_threshold_prob": float(threshold),
+        "val_proxy_tolerance_windows": float(tolerance),
+        "val_proxy_start_precision": float(start_precision),
+        "val_proxy_start_recall": float(start_recall),
+        "val_proxy_start_f1": float(start_f1),
+        "val_proxy_start_pred_total": float(start_pred_total),
+        "val_proxy_start_pred_valid": float(start_pred_valid),
+        "val_proxy_start_gt_total": float(start_gt_total),
+        "val_proxy_start_gt_covered": float(start_gt_covered),
+        "val_proxy_start_false_count": float(max(0, start_pred_total - start_pred_valid)),
+        "val_proxy_start_duplicate_excess": float(start_duplicate_excess),
+        "val_proxy_end_precision": float(end_precision),
+        "val_proxy_end_recall": float(end_recall),
+        "val_proxy_end_f1": float(end_f1),
+        "val_proxy_end_pred_total": float(end_pred_total),
+        "val_proxy_end_pred_valid": float(end_pred_valid),
+        "val_proxy_end_gt_total": float(end_gt_total),
+        "val_proxy_end_gt_covered": float(end_gt_covered),
+        "val_proxy_end_false_count": float(max(0, end_pred_total - end_pred_valid)),
+        "val_proxy_end_duplicate_excess": float(end_duplicate_excess),
+        "val_proxy_macro_f1": float(0.5 * (float(start_f1) + float(end_f1))),
+        "val_proxy_total_false_count": float(
+            max(0, start_pred_total - start_pred_valid) + max(0, end_pred_total - end_pred_valid)
+        ),
+    }
+
+
+def _stage0_selection_score(*, halo_metrics: Dict[str, float], proxy_metrics: Dict[str, float]) -> float:
+    return 0.5 * (float(halo_metrics["val_pair_f1"]) + float(proxy_metrics["val_proxy_macro_f1"]))
+
+
+def _stage0_selection_metrics(
+    *,
+    halo_metrics: Dict[str, float],
+    fullseq_metrics: Dict[str, float],
+    proxy_metrics: Dict[str, float],
+) -> Dict[str, float]:
+    return {
+        "val_selection_score": float(_stage0_selection_score(halo_metrics=halo_metrics, proxy_metrics=proxy_metrics)),
+        "val_halo16_pair_f1": float(halo_metrics["val_pair_f1"]),
+        "val_halo16_pair_precision": float(halo_metrics["val_pair_precision"]),
+        "val_halo16_pair_recall": float(halo_metrics["val_pair_recall"]),
+        "val_halo16_count_mae": float(halo_metrics["val_count_mae"]),
+        "val_halo16_start_mae_ms": float(halo_metrics["val_start_mae_ms"]),
+        "val_halo16_end_mae_ms": float(halo_metrics["val_end_mae_ms"]),
+        "val_fullseq_pair_f1": float(fullseq_metrics["val_pair_f1"]),
+        "val_fullseq_pair_precision": float(fullseq_metrics["val_pair_precision"]),
+        "val_fullseq_pair_recall": float(fullseq_metrics["val_pair_recall"]),
+        "val_fullseq_count_mae": float(fullseq_metrics["val_count_mae"]),
+        "val_fullseq_start_mae_ms": float(fullseq_metrics["val_start_mae_ms"]),
+        "val_fullseq_end_mae_ms": float(fullseq_metrics["val_end_mae_ms"]),
+        "val_proxy_macro_f1": float(proxy_metrics["val_proxy_macro_f1"]),
+        "val_proxy_total_false_count": float(proxy_metrics["val_proxy_total_false_count"]),
+    }
+
+
+def _stage0_component_tuple(payload: Dict[str, Any]) -> Tuple[float, float, float, float, float]:
+    halo_metrics = payload["halo16_eval"]["metrics"]
+    fullseq_metrics = payload["fullseq_eval"]["metrics"]
+    proxy_metrics = payload["threshold_proxy_eval"]
+    return (
+        float(_stage0_selection_score(halo_metrics=halo_metrics, proxy_metrics=proxy_metrics)),
+        float(halo_metrics["val_pair_f1"]),
+        float(proxy_metrics["val_proxy_macro_f1"]),
+        float(proxy_metrics["val_proxy_total_false_count"]),
+        float(fullseq_metrics["val_pair_f1"]),
+    )
+
+
+def _is_better_stage0_eval(candidate: Dict[str, Any], incumbent: Optional[Dict[str, Any]]) -> bool:
+    if incumbent is None:
+        return True
+    eps = 1e-9
+    candidate_avg, candidate_halo, candidate_proxy, candidate_false, candidate_fullseq = _stage0_component_tuple(candidate)
+    incumbent_avg, incumbent_halo, incumbent_proxy, incumbent_false, incumbent_fullseq = _stage0_component_tuple(incumbent)
+
+    material_drop = (
+        candidate_halo < (incumbent_halo - float(STAGE0_MATERIAL_DEGRADE_EPS))
+        or candidate_proxy < (incumbent_proxy - float(STAGE0_MATERIAL_DEGRADE_EPS))
+    )
+    if candidate_avg > incumbent_avg + eps:
+        if material_drop:
+            return False
+        return True
+    if candidate_avg < incumbent_avg - eps:
+        return False
+    if material_drop:
+        return False
+    if candidate_false < incumbent_false - eps:
+        return True
+    if candidate_false > incumbent_false + eps:
+        return False
+    if candidate_fullseq > incumbent_fullseq + eps:
+        return True
+    if candidate_fullseq < incumbent_fullseq - eps:
+        return False
+    if candidate_halo > incumbent_halo + eps:
+        return True
+    if candidate_halo < incumbent_halo - eps:
+        return False
+    return candidate_proxy > incumbent_proxy + eps
 
 
 def _checkpoint_decode_heads(payload: Dict[str, Any]) -> Tuple[List[str], int]:
@@ -1226,6 +1679,7 @@ def _save_stage0_checkpoint(
     val_records: Sequence[SegmentRecord],
     pooler_path: Path,
     cache_root: Path,
+    state_class_weights: np.ndarray,
 ) -> None:
     model_cfg = BoundaryTCNConfig(
         input_dim=int(train_records[0].embedding_dim),
@@ -1243,6 +1697,7 @@ def _save_stage0_checkpoint(
     payload: Dict[str, Any] = {
         "seq_model": "tcn",
         "model_state": {name: tensor.detach().cpu() for name, tensor in model.tcn.state_dict().items()},
+        "aux_state_head_state": {name: tensor.detach().cpu() for name, tensor in model.state_head.state_dict().items()},
         "model_cfg": asdict(model_cfg),
         "train_cfg": train_cfg,
         "heads": ["start", "end", "cycle"],
@@ -1288,6 +1743,18 @@ def _save_stage0_checkpoint(
                 "camera_stratified_hash_60_40_split",
             ],
         },
+        "rd_experiment": {
+            "name": "halo16_hybrid_stage0",
+            "halo": int(HALO_CONTEXT_WINDOWS),
+            "center_chunk_len": int(HALO_CENTER_CHUNK),
+            "selection_metric": "guarded_avg_halo16_pair_f1_proxy_macro_f1_then_false_then_fullseq",
+            "primary_heads": ["start", "end", "cycle"],
+            "aux_state_head": list(STATE_NAMES),
+            "state_class_weights": [float(item) for item in state_class_weights.tolist()],
+            "state_aux_weight": float(cfg.aux_loss_weight),
+            "shoulder_radius": int(STATE_SHOULDER_RADIUS),
+            "shoulder_weight": float(STATE_SHOULDER_WEIGHT),
+        },
     }
     payload["boundary_arch_version"] = prod_tcn.infer_boundary_arch_version(
         model_cfg=payload["model_cfg"],
@@ -1318,7 +1785,13 @@ def _run_stage0(
         _build_supervised_segment(record, use_eval_span=False, cfg=cfg)
         for record in train_records
     ]
+    val_segments = [
+        _build_supervised_segment(record, use_eval_span=True, cfg=cfg)
+        for record in val_records
+    ]
     sampling_weights = _build_train_sampling_weights(train_segments)
+    state_class_weights_np = _build_state_class_weights(train_segments)
+    state_class_weights_t = torch.from_numpy(state_class_weights_np).to(device=device)
     model = Stage0BoundaryModel(input_dim=int(train_records[0].embedding_dim), cfg=cfg).to(device)
     trainable_params = [param for param in model.parameters() if param.requires_grad]
     if not trainable_params:
@@ -1330,19 +1803,24 @@ def _run_stage0(
     steps_per_epoch = int(max(1, math.ceil(len(train_segments) / float(cfg.batch_size))))
     total_steps = int(max(1, int(cfg.epochs) * steps_per_epoch))
     LOGGER.info(
-        "Stage-0 replay: train_segments=%d val_segments=%d epochs=%d steps_per_epoch=%d total_steps=%d budget=%.1fs",
+        "Stage-0 hybrid: train_segments=%d val_segments=%d epochs=%d steps_per_epoch=%d total_steps=%d budget=%.1fs halo=%d center_chunk_len=%d state_aux_weight=%.4f class_weights=%s",
         len(train_segments),
-        len(val_records),
+        len(val_segments),
         int(cfg.epochs),
         int(steps_per_epoch),
         int(total_steps),
         float(budget_seconds),
+        int(HALO_CONTEXT_WINDOWS),
+        int(HALO_CENTER_CHUNK),
+        float(cfg.aux_loss_weight),
+        [round(float(item), 4) for item in state_class_weights_np.tolist()],
     )
 
     deadline = time.monotonic() + float(budget_seconds)
     history: List[Dict[str, Any]] = []
-    best_eval_metrics: Optional[Dict[str, float]] = None
+    best_eval_payload: Optional[Dict[str, Any]] = None
     best_eval_state: Optional[Dict[str, torch.Tensor]] = None
+    best_state_head: Optional[Dict[str, torch.Tensor]] = None
     best_source = "none"
     best_epoch = -1
     ema_state: Optional[Dict[str, torch.Tensor]] = None
@@ -1354,10 +1832,11 @@ def _run_stage0(
         model.train()
         epoch_totals = {
             "loss_total": 0.0,
+            "loss_boundary": 0.0,
             "loss_start": 0.0,
             "loss_end": 0.0,
+            "loss_state": 0.0,
             "loss_cycle": 0.0,
-            "loss_aux": 0.0,
             "loss_transition": 0.0,
         }
         epoch_t0 = time.time()
@@ -1380,9 +1859,18 @@ def _run_stage0(
                 targets_t = {key: value.to(device=device, non_blocking=True) for key, value in targets.items()}
                 autocast_ctx = torch.autocast(device_type="cuda", dtype=autocast_dtype) if use_autocast else nullcontext()
                 with autocast_ctx:
-                    logits, features = model(batch)
-                    loss, stats = _compute_stage0_loss(logits, features, targets_t, cfg=cfg)
+                    logits3, logits4, features = model(batch)
+                    loss, stats = _compute_hybrid_stage0_loss(
+                        logits3,
+                        features,
+                        logits4,
+                        targets_t,
+                        cfg=cfg,
+                        class_weights=state_class_weights_t,
+                    )
                     loss = loss / float(cfg.grad_accum_steps)
+                if not torch.isfinite(loss):
+                    raise RuntimeError(f"Non-finite loss at epoch={epoch}")
                 loss.backward()
                 for key, value in stats.items():
                     running_stats[key] += float(value)
@@ -1411,11 +1899,13 @@ def _run_stage0(
 
             if global_step % int(cfg.log_every_steps) == 0:
                 LOGGER.info(
-                    "stage0 step=%04d/%04d epoch=%03d loss=%.4f start=%.4f end=%.4f cycle=%.4f transition=%.4f lr=%.6g",
+                    "stage0 step=%04d/%04d epoch=%03d loss=%.4f boundary=%.4f state=%.4f start=%.4f end=%.4f cycle=%.4f transition=%.4f lr=%.6g",
                     global_step,
                     total_steps,
                     epoch,
                     running_stats["loss_total"] / float(max(1, cfg.grad_accum_steps)),
+                    running_stats["loss_boundary"] / float(max(1, cfg.grad_accum_steps)),
+                    running_stats["loss_state"] / float(max(1, cfg.grad_accum_steps)),
                     running_stats["loss_start"] / float(max(1, cfg.grad_accum_steps)),
                     running_stats["loss_end"] / float(max(1, cfg.grad_accum_steps)),
                     running_stats["loss_cycle"] / float(max(1, cfg.grad_accum_steps)),
@@ -1436,95 +1926,115 @@ def _run_stage0(
 
         should_eval = ((epoch + 1) % int(cfg.val_every_epochs) == 0) or (time.monotonic() >= deadline)
         if should_eval:
-            ckpt_eval_path = output_dir / "_eval_current.pt"
-            _save_stage0_checkpoint(
-                ckpt_eval_path,
-                model=model,
-                cfg=cfg,
-                metrics={},
-                best_epoch=best_epoch,
-                best_source=best_source,
-                steps_per_epoch=steps_per_epoch,
-                total_steps=total_steps,
-                train_records=train_records,
-                val_records=val_records,
-                pooler_path=spec.pooler_path,
-                cache_root=spec.cache_root,
-            )
-            current_metrics = _evaluate_pooled_checkpoint(ckpt_eval_path, val_records, device=device)
-            epoch_row["val_current"] = dict(current_metrics)
-            improved = _is_better_metrics(current_metrics, best_eval_metrics)
+            model.eval()
+            current_halo = _evaluate_stage0_halo_model(model, val_segments, device=device)
+            current_fullseq = _evaluate_stage0_fullseq_model(model, val_segments, device=device)
+            current_proxy = _evaluate_stage0_threshold_proxy(model, val_segments, device=device)
+            current_payload = {
+                "epoch": int(epoch),
+                "source": "current",
+                "halo16_eval": {"metrics": current_halo, "timing_mae_ms": float(_compute_timing_mae_ms(current_halo))},
+                "fullseq_eval": {
+                    "metrics": current_fullseq,
+                    "timing_mae_ms": float(_compute_timing_mae_ms(current_fullseq)),
+                },
+                "threshold_proxy_eval": current_proxy,
+            }
+            epoch_row["val_current"] = current_payload
+            improved = _is_better_stage0_eval(current_payload, best_eval_payload)
             if improved:
-                best_eval_metrics = dict(current_metrics)
+                best_eval_payload = current_payload
                 best_eval_state = _clone_state_dict(model.tcn)
+                best_state_head = _clone_state_dict(model.state_head)
                 best_epoch = int(epoch)
                 best_source = "current"
 
             LOGGER.info(
-                "stage0 val epoch=%03d source=current pair_f1=%.6f proxy_false=%d legacy_pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
+                "stage0 val epoch=%03d source=current score=%.6f halo16=%.6f proxy=%.6f false=%d fullseq=%.6f %s",
                 epoch,
-                _primary_pair_f1(current_metrics),
-                int(round(float(current_metrics.get("val_proxy_total_false_count", 0.0)))),
-                _legacy_pair_f1(current_metrics),
-                current_metrics["val_count_mae"],
-                _compute_timing_mae_ms(current_metrics),
+                _stage0_selection_score(halo_metrics=current_halo, proxy_metrics=current_proxy),
+                float(current_halo["val_pair_f1"]),
+                float(current_proxy["val_proxy_macro_f1"]),
+                int(round(float(current_proxy["val_proxy_total_false_count"]))),
+                float(current_fullseq["val_pair_f1"]),
                 "best" if improved else "keep-prev",
             )
 
             if ema_state is not None:
                 current_state = _clone_state_dict(model.tcn)
                 model.tcn.load_state_dict(ema_state)
-                _save_stage0_checkpoint(
-                    ckpt_eval_path,
-                    model=model,
-                    cfg=cfg,
-                    metrics={},
-                    best_epoch=best_epoch,
-                    best_source=best_source,
-                    steps_per_epoch=steps_per_epoch,
-                    total_steps=total_steps,
-                    train_records=train_records,
-                    val_records=val_records,
-                    pooler_path=spec.pooler_path,
-                    cache_root=spec.cache_root,
-                )
-                ema_metrics = _evaluate_pooled_checkpoint(ckpt_eval_path, val_records, device=device)
-                epoch_row["val_ema"] = dict(ema_metrics)
-                improved = _is_better_metrics(ema_metrics, best_eval_metrics)
+                ema_halo = _evaluate_stage0_halo_model(model, val_segments, device=device)
+                ema_fullseq = _evaluate_stage0_fullseq_model(model, val_segments, device=device)
+                ema_proxy = _evaluate_stage0_threshold_proxy(model, val_segments, device=device)
+                ema_payload = {
+                    "epoch": int(epoch),
+                    "source": "ema",
+                    "halo16_eval": {"metrics": ema_halo, "timing_mae_ms": float(_compute_timing_mae_ms(ema_halo))},
+                    "fullseq_eval": {
+                        "metrics": ema_fullseq,
+                        "timing_mae_ms": float(_compute_timing_mae_ms(ema_fullseq)),
+                    },
+                    "threshold_proxy_eval": ema_proxy,
+                }
+                epoch_row["val_ema"] = ema_payload
+                improved = _is_better_stage0_eval(ema_payload, best_eval_payload)
                 if improved:
-                    best_eval_metrics = dict(ema_metrics)
+                    best_eval_payload = ema_payload
                     best_eval_state = _clone_tensor_dict(ema_state)
+                    best_state_head = _clone_state_dict(model.state_head)
                     best_epoch = int(epoch)
                     best_source = "ema"
                 LOGGER.info(
-                    "stage0 val epoch=%03d source=ema pair_f1=%.6f proxy_false=%d legacy_pair_f1=%.6f count_mae=%.6f timing_mae_ms=%.1f %s",
+                    "stage0 val epoch=%03d source=ema score=%.6f halo16=%.6f proxy=%.6f false=%d fullseq=%.6f %s",
                     epoch,
-                    _primary_pair_f1(ema_metrics),
-                    int(round(float(ema_metrics.get("val_proxy_total_false_count", 0.0)))),
-                    _legacy_pair_f1(ema_metrics),
-                    ema_metrics["val_count_mae"],
-                    _compute_timing_mae_ms(ema_metrics),
+                    _stage0_selection_score(halo_metrics=ema_halo, proxy_metrics=ema_proxy),
+                    float(ema_halo["val_pair_f1"]),
+                    float(ema_proxy["val_proxy_macro_f1"]),
+                    int(round(float(ema_proxy["val_proxy_total_false_count"]))),
+                    float(ema_fullseq["val_pair_f1"]),
                     "best" if improved else "keep-prev",
                 )
                 model.tcn.load_state_dict(current_state)
-            ckpt_eval_path.unlink(missing_ok=True)
 
         history.append(epoch_row)
         if time.monotonic() >= deadline:
             break
 
     if best_eval_state is None:
+        model.eval()
+        best_eval_payload = {
+            "epoch": int(max(0, len(history) - 1)),
+            "source": "current",
+            "halo16_eval": {
+                "metrics": _evaluate_stage0_halo_model(model, val_segments, device=device),
+            },
+            "fullseq_eval": {
+                "metrics": _evaluate_stage0_fullseq_model(model, val_segments, device=device),
+            },
+            "threshold_proxy_eval": _evaluate_stage0_threshold_proxy(model, val_segments, device=device),
+        }
         best_eval_state = _clone_state_dict(model.tcn)
+        best_state_head = _clone_state_dict(model.state_head)
         best_epoch = int(max(0, len(history) - 1))
         best_source = "current"
 
     model.tcn.load_state_dict(best_eval_state)
+    if best_state_head is not None:
+        model.state_head.load_state_dict(best_state_head)
+    final_halo_metrics = _evaluate_stage0_halo_model(model, val_segments, device=device)
+    final_fullseq_metrics = _evaluate_stage0_fullseq_model(model, val_segments, device=device)
+    final_proxy_metrics = _evaluate_stage0_threshold_proxy(model, val_segments, device=device)
+    final_metrics = _stage0_selection_metrics(
+        halo_metrics=final_halo_metrics,
+        fullseq_metrics=final_fullseq_metrics,
+        proxy_metrics=final_proxy_metrics,
+    )
     final_checkpoint = output_dir / "boundary_model.pt"
     _save_stage0_checkpoint(
         final_checkpoint,
         model=model,
         cfg=cfg,
-        metrics=best_eval_metrics or {},
+        metrics=final_metrics,
         best_epoch=best_epoch,
         best_source=best_source,
         steps_per_epoch=steps_per_epoch,
@@ -1533,8 +2043,8 @@ def _run_stage0(
         val_records=val_records,
         pooler_path=spec.pooler_path,
         cache_root=spec.cache_root,
+        state_class_weights=state_class_weights_np,
     )
-    final_metrics = _evaluate_pooled_checkpoint(final_checkpoint, val_records, device=device)
 
     history_path = output_dir / "history.json"
     metrics_path = output_dir / "metrics.json"
@@ -1553,9 +2063,12 @@ def _run_stage0(
         {
             "best_epoch": int(best_epoch),
             "best_source": str(best_source),
-            "selection_metric": "threshold_proxy_macro_f1_then_false_count_then_legacy_pair_f1_then_count_mae_then_timing",
+            "selection_metric": "guarded_avg_halo16_pair_f1_proxy_macro_f1_then_false_then_fullseq",
             "metrics": final_metrics,
-            "timing_mae_ms": float(_compute_timing_mae_ms(final_metrics)),
+            "halo16_metrics": final_halo_metrics,
+            "fullseq_metrics": final_fullseq_metrics,
+            "proxy_metrics": final_proxy_metrics,
+            "timing_mae_ms": float(_compute_timing_mae_ms(final_halo_metrics)),
         },
     )
     _write_json(
@@ -1567,6 +2080,13 @@ def _run_stage0(
             "time_budget_seconds": float(budget_seconds),
             "split_policy": str(spec.split_plan.split_policy),
             "val_ratio": float(VAL_RATIO),
+            "halo": int(HALO_CONTEXT_WINDOWS),
+            "center_chunk_len": int(HALO_CENTER_CHUNK),
+            "state_names": list(STATE_NAMES),
+            "state_class_weights": [float(item) for item in state_class_weights_np.tolist()],
+            "state_aux_weight": float(cfg.aux_loss_weight),
+            "shoulder_radius": int(STATE_SHOULDER_RADIUS),
+            "shoulder_weight": float(STATE_SHOULDER_WEIGHT),
         },
     )
     return Stage0Result(
@@ -1575,6 +2095,9 @@ def _run_stage0(
         metrics_path=metrics_path,
         history_path=history_path,
         metrics=final_metrics,
+        halo_metrics=final_halo_metrics,
+        fullseq_metrics=final_fullseq_metrics,
+        proxy_metrics=final_proxy_metrics,
         best_epoch=int(best_epoch),
         best_source=str(best_source),
         steps_per_epoch=int(steps_per_epoch),
@@ -2150,6 +2673,46 @@ def _run_historical_phase1(
     budget_seconds: float,
 ) -> Phase1Result:
     output_dir.mkdir(parents=True, exist_ok=True)
+    start_t = time.time()
+    if float(budget_seconds) <= 0.0:
+        history_path = output_dir / "history.json"
+        metrics_path = output_dir / "metrics.json"
+        config_snapshot_path = output_dir / "config_snapshot.json"
+        _write_json(history_path, {"history": []})
+        _write_json(
+            metrics_path,
+            {
+                "skipped": True,
+                "skip_reason": "zero_budget",
+                "selection_metric": "stage0_selected_checkpoint_passthrough",
+                "metrics": stage0_result.metrics,
+                "source_stage0_checkpoint": str(stage0_result.checkpoint_path),
+                "source_pooler_checkpoint": str(spec.pooler_path),
+            },
+        )
+        _write_json(
+            config_snapshot_path,
+            {
+                "profile_name": "historical",
+                "skipped": True,
+                "skip_reason": "zero_budget",
+                "time_budget_seconds": float(budget_seconds),
+            },
+        )
+        return Phase1Result(
+            probe_checkpoint=spec.pooler_path,
+            tcn_checkpoint=stage0_result.checkpoint_path,
+            metrics_path=metrics_path,
+            config_snapshot_path=config_snapshot_path,
+            history_path=history_path,
+            metrics=dict(stage0_result.metrics),
+            best_epoch=int(stage0_result.best_epoch),
+            best_loss=0.0,
+            effective_chunk_len=0,
+            elapsed_seconds=float(time.time() - start_t),
+            skipped=True,
+        )
+
     chunk_len = 32 if str(spec.encoder_model).lower() == "large" else 256
     while True:
         config = _historical_phase1_config(seed=SEED, chunk_len=chunk_len)
@@ -2175,7 +2738,6 @@ def _run_historical_phase1(
         best_probe_state: Optional[Dict[str, torch.Tensor]] = None
         best_tcn_state: Optional[Dict[str, torch.Tensor]] = None
         deadline = time.monotonic() + float(budget_seconds)
-        start_t = time.time()
         try:
             for _ in range(int(config.epochs)):
                 if trainer.epoch > 0 and time.monotonic() >= deadline:
@@ -2248,6 +2810,7 @@ def _run_historical_phase1(
             best_loss=float(best_loss),
             effective_chunk_len=int(chunk_len),
             elapsed_seconds=float(time.time() - start_t),
+            skipped=False,
         )
 
 
@@ -2311,9 +2874,11 @@ def main() -> int:
     peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
     print(
         f"[tcn] best_epoch={stage0_result.best_epoch} source={stage0_result.best_source} "
-        f"pair_f1={stage0_result.metrics['val_pair_f1']:.6f} "
-        f"legacy_pair_f1={_legacy_pair_f1(stage0_result.metrics):.6f} "
-        f"count_mae={stage0_result.metrics['val_count_mae']:.6f}"
+        f"score={stage0_result.metrics['val_selection_score']:.6f} "
+        f"halo16={stage0_result.metrics['val_halo16_pair_f1']:.6f} "
+        f"proxy={stage0_result.metrics['val_proxy_macro_f1']:.6f} "
+        f"false={int(round(stage0_result.metrics['val_proxy_total_false_count']))} "
+        f"fullseq={stage0_result.metrics['val_fullseq_pair_f1']:.6f}"
     )
 
     print("[stage] probe_phase1 | duration=" f"{probe_stage_seconds:.1f}s | profile=historical")
@@ -2325,13 +2890,20 @@ def main() -> int:
         budget_seconds=probe_stage_seconds,
     )
     peak_vram_mb = max(peak_vram_mb, _peak_vram_mb())
-    print(
-        f"[probe] best_epoch={phase1_result.best_epoch} loss={phase1_result.best_loss:.6f} "
-        f"pair_f1={phase1_result.metrics['val_pair_f1']:.6f} "
-        f"legacy_pair_f1={_legacy_pair_f1(phase1_result.metrics):.6f} "
-        f"count_mae={phase1_result.metrics['val_count_mae']:.6f} "
-        f"chunk_len={phase1_result.effective_chunk_len}"
-    )
+    if phase1_result.skipped:
+        print(
+            f"[probe] skipped=1 reason=zero_budget "
+            f"passthrough_tcn={phase1_result.tcn_checkpoint} "
+            f"passthrough_probe={phase1_result.probe_checkpoint}"
+        )
+    else:
+        print(
+            f"[probe] best_epoch={phase1_result.best_epoch} loss={phase1_result.best_loss:.6f} "
+            f"pair_f1={phase1_result.metrics['val_pair_f1']:.6f} "
+            f"legacy_pair_f1={_legacy_pair_f1(phase1_result.metrics):.6f} "
+            f"count_mae={phase1_result.metrics['val_count_mae']:.6f} "
+            f"chunk_len={phase1_result.effective_chunk_len}"
+        )
 
     total_seconds = float(time.time() - start_time)
     summary = {
@@ -2359,6 +2931,9 @@ def main() -> int:
             "best_source": str(stage0_result.best_source),
             "elapsed_seconds": float(stage0_result.elapsed_seconds),
             "metrics": stage0_result.metrics,
+            "halo16_metrics": stage0_result.halo_metrics,
+            "fullseq_metrics": stage0_result.fullseq_metrics,
+            "proxy_metrics": stage0_result.proxy_metrics,
         },
         "phase1": {
             "probe_checkpoint": str(phase1_result.probe_checkpoint),
@@ -2370,6 +2945,7 @@ def main() -> int:
             "best_loss": float(phase1_result.best_loss),
             "effective_chunk_len": int(phase1_result.effective_chunk_len),
             "elapsed_seconds": float(phase1_result.elapsed_seconds),
+            "skipped": bool(phase1_result.skipped),
             "metrics": phase1_result.metrics,
         },
     }
@@ -2380,11 +2956,18 @@ def main() -> int:
         return 1
 
     print("---")
-    print(f"val_pair_f1:        {phase1_result.metrics['val_pair_f1']:.6f}")
-    print(f"val_legacy_pair_f1: {phase1_result.metrics['val_legacy_pair_f1']:.6f}")
-    print(f"val_count_mae:      {phase1_result.metrics['val_count_mae']:.6f}")
-    print(f"val_start_mae_ms:   {phase1_result.metrics['val_start_mae_ms']:.1f}")
-    print(f"val_end_mae_ms:     {phase1_result.metrics['val_end_mae_ms']:.1f}")
+    if phase1_result.skipped:
+        print(f"val_selection_score:{stage0_result.metrics['val_selection_score']:.6f}")
+        print(f"val_halo16_pair_f1:{stage0_result.metrics['val_halo16_pair_f1']:.6f}")
+        print(f"val_proxy_macro_f1:{stage0_result.metrics['val_proxy_macro_f1']:.6f}")
+        print(f"val_proxy_false:   {int(round(stage0_result.metrics['val_proxy_total_false_count']))}")
+        print(f"val_fullseq_pair_f1:{stage0_result.metrics['val_fullseq_pair_f1']:.6f}")
+    else:
+        print(f"val_pair_f1:        {phase1_result.metrics['val_pair_f1']:.6f}")
+        print(f"val_legacy_pair_f1: {phase1_result.metrics['val_legacy_pair_f1']:.6f}")
+        print(f"val_count_mae:      {phase1_result.metrics['val_count_mae']:.6f}")
+        print(f"val_start_mae_ms:   {phase1_result.metrics['val_start_mae_ms']:.1f}")
+        print(f"val_end_mae_ms:     {phase1_result.metrics['val_end_mae_ms']:.1f}")
     print(f"training_seconds:   {tcn_stage_seconds + probe_stage_seconds:.1f}")
     print(f"total_seconds:      {total_seconds:.1f}")
     print(f"time_budget_seconds:{total_budget_seconds:.1f}")
@@ -2394,8 +2977,8 @@ def main() -> int:
     print(f"cache_version:      {CACHE_VERSION}")
     print(f"model_family:       {MODEL_FAMILY}")
     print(f"task_mode:          {TASK_MODE}")
-    print(f"pooler_tune_mode:   phase1_historical")
-    print(f"representation_mode:pooled_z0_then_tokens")
+    print(f"pooler_tune_mode:   {'phase1_skipped_zero_budget' if phase1_result.skipped else 'phase1_historical'}")
+    print(f"representation_mode:{'hybrid_halo16_pooled_z0' if phase1_result.skipped else 'pooled_z0_then_tokens'}")
     print(f"cache_root:         {spec.cache_root}")
     print(f"output_root_final:  {output_root}")
     return 0

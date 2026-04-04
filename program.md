@@ -9,9 +9,9 @@ To set up a new experiment, work with the user to:
 1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from the current default branch.
 3. **Read the in-scope files**: Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
+  - `README.md` — repository context.
+  - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
+  - `train.py` — the file you modify. Model architecture, optimizer, training loop.
 4. **Verify data exists**: check that the required local cache exists (by default `~/.cache/autoresearch/onemed_dense_v1/`, unless the repo clearly specifies another path). If a local override is supported, use the repo’s existing mechanism such as `AUTORESEARCH_CACHE_DIR` or `--cache-dir`. For this branch, use only the single subassembly cache. Do not prepare or reference a button cache. The canonical prepare path is:
 
 ```bash
@@ -37,62 +37,69 @@ Once setup is confirmed, kick off the experimentation.
 
 **Execution environment**
 
-* Use this repo’s `uv` environment. The canonical runtime is `uv run python ...`.
-* Prefer the existing checked-out workspace plus the repo’s own `.venv`; do not create ad hoc alternate environments.
-* If the run needs shared checkpoints or credentials from another workspace, use the repo’s existing path-based hooks such as `AUTORESEARCH_WORKSPACE_ROOT` and `AUTORESEARCH_ENV_PATH`.
+- Use this repo’s `uv` environment. The canonical runtime is `uv run python ...`.
+- Prefer the existing checked-out workspace plus the repo’s own `.venv`; do not create ad hoc alternate environments.
+- If the run needs shared checkpoints or credentials from another workspace, use the repo’s existing path-based hooks such as `AUTORESEARCH_WORKSPACE_ROOT` and `AUTORESEARCH_ENV_PATH`.
 
-Each experiment runs on a single GPU. The training script runs for a **fixed 10-minute time budget**. For this branch, launch it as:
+Each experiment runs on a single GPU. The training script runs for a **fixed 5-minute time budget**. This branch is a **stage-0-only** research track: phase 1 remains in `train.py` only as dormant compatibility code and must stay disabled. For this branch, launch it as:
 
 ```bash
 AUTORESEARCH_CACHE_DIR=/tmp/autoresearch-minda-subassembly-cache \
+AUTORESEARCH_TIME_BUDGET_SECONDS=300 \
+AUTORESEARCH_TCN_STAGE_SECONDS=300 \
+AUTORESEARCH_PROBE_STAGE_SECONDS=0 \
 CUDA_VISIBLE_DEVICES=0 \
 uv run python train.py
 ```
 
-This branch reads the source run from the prepared cache manifest; do not pass button-specific env vars.
+This branch reads the source run from the prepared cache manifest; do not pass button-specific env vars. Do not enable or spend budget on phase 1 / probe tuning / pooler tuning for this branch.
 
 Treat the task-specific cache contract as fixed. In this standalone dense-temporal / vision setting, that means things like:
 
-* fixed prepared cache / shards,
-* fixed train/val split,
-* fixed prepare/materialization path,
-* fixed held-out validation protocol,
-* fixed frozen upstream V-JEPA encoder assumptions unless `train.py` already makes something tunable.
-* For this branch, the fixed contract is a single subassembly dataset with a deterministic `60/40` `camera_stratified_hash` validation split.
+- fixed prepared cache / shards,
+- fixed train/val split,
+- fixed prepare/materialization path,
+- fixed held-out validation protocol,
+- fixed frozen upstream V-JEPA encoder assumptions unless `train.py` already makes something tunable.
+- For this branch, the fixed contract is a single subassembly dataset with a deterministic `60/40` `camera_stratified_hash` validation split.
 
 **What you CAN do:**
 
-* Modify `train.py` only - this is the only file you edit
-* Change architecture.
-* Change temporal model.
-* Change temporal model internals.
-* Change optimizer, hyperparameters, training loop, batch size, model size, and related training details. But if incremental hyperparameter tuning starts to plateau, do not get stuck there; the bigger remaining gains are likely to come from systemic architectural changes to the network.
-* Change losses and weighting.
-* Use cached encoder tokens instead of pooled embeddings.
-* Tune the pooler from `train.py`.
-* Add auxiliary objectives, self-supervised techniques, LoRA, or architectural improvements as long as they stay within the same base V-JEPA setup.
-* Add entirely new downstream temporal models.
-* Simplify the code if it preserves or improves results.
+- Modify `train.py` only - this is the only file you edit
+- Change architecture.
+- Change temporal model.
+- Change temporal model internals.
+- Change optimizer, hyperparameters, training loop, batch size, model size, and related training details. Use hyperparameter tuning to support a stronger hypothesis; do not get stuck running only small local sweeps as the default search strategy.
+- Change losses, weighting, and objective structure.
+- Change boundary head structure or add auxiliary heads that remain within the fixed evaluation contract.
+- Use cached encoder tokens instead of pooled embeddings if that supports a stronger stage-0 temporal model.
+- Add auxiliary objectives, self-supervised techniques, LoRA, or architectural improvements as long as they stay within the same base V-JEPA setup.
+- Add entirely new downstream temporal models, including materially different TCN variants or non-current temporal backbones, as long as they stay within the same fixed data/evaluation contract and 5-minute stage-0 budget.
+- Simplify the code if it preserves or improves results.
 
 **What you CANNOT do:**
 
-* Modify `prepare.py` or the fixed data/evaluation harness.
-* Modify the evaluation metric or how it is computed.
-* Modify the train/val split.
-* Add new packages or dependencies.
-* Change the problem definition just to make the metric look better.
-* Rewrite the repo into a totally different system if the experiment is meant to improve the existing stack rather than replace it.
+- Modify `prepare.py` or the fixed data/evaluation harness.
+- Modify the evaluation metric or how it is computed.
+- Modify the train/val split.
+- Add new packages or dependencies.
+- Enable phase 1, probe tuning, pooler finetuning, or any other code path that changes this branch from a 5-minute stage-0-only run.
+- Change the problem definition just to make the metric look better.
+- Rewrite the repo into a totally different system if the experiment is meant to improve the existing stack rather than replace it.
 
-**The goal is simple: improve the primary validation metric defined by the repo.**
-For this single-space Minda subassembly branch, compare candidates by `val_pair_f1` on the held-out subassembly validation split, where `val_pair_f1` is the proxy-threshold macro-F1 over raw start/end logits (`prob=0.15`, `tolerance=2` windows). Tie-break with `val_proxy_total_false_count`, then `val_legacy_pair_f1`, then `val_count_mae`, then average timing MAE.
+Do not default to narrow hyperparameter optimization. The branch is at the point where the biggest remaining gains are more likely to come from structural changes: new losses, new head structure, different temporal backbones, different representation usage, or entirely different downstream temporal models that still respect the fixed contract. Use hyperparameter tuning mainly to support, stabilize, or validate one of those larger ideas.
 
-Since the runtime budget is fixed, you do not need to obsess over absolute training duration inside that budget. Everything is fair game within `train.py`: architecture, optimizer, losses, schedules, batching, parameterization, temporal context, decoding head, and representation consumption.
+**The goal is simple: improve joint stage-0 validation quality without trading one core metric away.**
+For this single-space Minda subassembly branch, compare candidates by `val_selection_score`, defined as the average of `val_halo16_pair_f1` and `val_proxy_macro_f1` on the held-out subassembly validation split. Reject candidates that improve the average by materially degrading either component. Material means an absolute drop of more than `0.01` in either `val_halo16_pair_f1` or `val_proxy_macro_f1`. Tie-break with lower `val_proxy_total_false_count`, then higher `val_fullseq_pair_f1`, then average timing MAE.
+
+Since the runtime budget is fixed, you do not need to obsess over absolute training duration inside that budget. Everything is fair game within `train.py` so long as it stays inside the fixed 5-minute stage-0-only budget: architecture, optimizer, losses, schedules, batching, parameterization, temporal context, decoding head, temporal backbone choice, and representation consumption.
 
 **Tie-breakers** matter. All else equal:
 
-1. better primary metric first,
-2. then better secondary metrics explicitly printed by the evaluator,
-3. then simpler code.
+1. better `val_selection_score` first,
+2. then lower `val_proxy_total_false_count`,
+3. then better `val_fullseq_pair_f1`,
+4. then simpler code.
 
 **VRAM** is a soft constraint. Some increase is acceptable for meaningful gains, but it should not blow up dramatically.
 
@@ -108,22 +115,22 @@ When the script finishes it should print a summary block like this:
 
 ```text
 ---
-val_pair_f1:        0.000000
-val_legacy_pair_f1: 0.000000
-val_count_mae:      0.000000
-val_start_mae_ms:   0.0
-val_end_mae_ms:     0.0
-training_seconds:   600.0
-total_seconds:      620.0
-time_budget_seconds:600.0
+val_selection_score:0.000000
+val_halo16_pair_f1:0.000000
+val_proxy_macro_f1:0.000000
+val_proxy_false:   0
+val_fullseq_pair_f1:0.000000
+training_seconds:   300.0
+total_seconds:      320.0
+time_budget_seconds:300.0
 tcn_stage_seconds:  300.0
-probe_stage_seconds:300.0
+probe_stage_seconds:0.0
 peak_vram_mb:       0.0
 cache_version:      onemed_dense_v1
-model_family:       minda_subassembly_mar13_stage0_historical_probe
+model_family:       minda_subassembly_hybrid_halo16_stage0_optional_historical_probe
 task_mode:          boundary_pairs_single_space
-pooler_tune_mode:   phase1_historical
-representation_mode:pooled_z0_then_tokens
+pooler_tune_mode:   phase1_skipped_zero_budget
+representation_mode:hybrid_halo16_pooled_z0
 ```
 
 The exact fields may differ by repo and task mode, but the script must print a machine-readable summary block at the end. The primary metric and memory usage must be extractable from the log.
@@ -131,7 +138,7 @@ The exact fields may differ by repo and task mode, but the script must print a m
 You can extract the key metrics from the log file with commands like:
 
 ```bash
-grep "^val_pair_f1:\|^val_legacy_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
+grep "^val_selection_score:\|^val_halo16_pair_f1:\|^val_proxy_macro_f1:\|^val_proxy_false:\|^val_fullseq_pair_f1:\|^peak_vram_mb:" run.log
 ```
 
 If the summary block is missing, the run failed.
@@ -149,21 +156,21 @@ commit	primary_metric	aux_metric	memory_gb	status	description
 Where:
 
 1. `commit` = git commit hash (short, 7 chars)
-2. `primary_metric` = `val_pair_f1` on the held-out subassembly validation split (proxy-threshold macro-F1) — use `0.000000` for crashes
-3. `aux_metric` = `val_count_mae`
+2. `primary_metric` = `val_selection_score` on the held-out subassembly validation split — use `0.000000` for crashes
+3. `aux_metric` = `val_proxy_total_false_count` — use `0.0` for crashes
 4. `memory_gb` = peak memory in GB, round to `.1f` (divide `peak_vram_mb` by 1024) — use `0.0` for crashes
 5. `status` = `keep`, `discard`, or `crash`
-6. `description` = short text description of what this experiment tried
+6. `description` = short text description of what this experiment tried; include the structural idea, and usually include the component metrics (`halo16`, `proxy`, `fullseq`) for auditability
 
-Use timing MAE as the next tie-breaker when `primary_metric` and `aux_metric` are effectively tied.
+Use `val_fullseq_pair_f1`, then timing MAE, as the next tie-breakers when `primary_metric` and `aux_metric` are effectively tied.
 
 Example:
 
 ```text
 commit	primary_metric	aux_metric	memory_gb	status	description
-a1b2c3d	0.812300	0.440000	18.6	keep	subassembly baseline
-b2c3d4e	0.826700	0.804000	18.9	keep	increase temporal receptive field
-c3d4e5f	0.821000	0.781000	18.7	discard	switch auxiliary loss weighting
+a1b2c3d	0.806800	205.0	18.6	keep	subassembly baseline halo16=0.786 proxy=0.828 fullseq=0.794
+b2c3d4e	0.819900	169.0	18.9	keep	change boundary head structure halo16=0.800 proxy=0.840 fullseq=0.801
+c3d4e5f	0.814200	188.0	18.7	discard	switch auxiliary loss weighting halo16=0.792 proxy=0.836 fullseq=0.796
 d4e5f6g	0.000000	0.000000	0.0	crash	double hidden width caused OOM
 ```
 
@@ -182,19 +189,22 @@ LOOP FOREVER:
 
 ```bash
 AUTORESEARCH_CACHE_DIR=/tmp/autoresearch-minda-subassembly-cache \
+AUTORESEARCH_TIME_BUDGET_SECONDS=300 \
+AUTORESEARCH_TCN_STAGE_SECONDS=300 \
+AUTORESEARCH_PROBE_STAGE_SECONDS=0 \
 CUDA_VISIBLE_DEVICES=0 \
 uv run python train.py > run.log 2>&1
 ```
 
 Redirect everything — do **NOT** use `tee` or let output flood your context.
 
-5. Read out the results:
+1. Read out the results:
 
 ```bash
-grep "^val_pair_f1:\|^val_legacy_pair_f1:\|^val_count_mae:\|^val_start_mae_ms:\|^val_end_mae_ms:\|^peak_vram_mb:" run.log
+grep "^val_selection_score:\|^val_halo16_pair_f1:\|^val_proxy_macro_f1:\|^val_proxy_false:\|^val_fullseq_pair_f1:\|^peak_vram_mb:" run.log
 ```
 
-6. If the grep output is empty, the run crashed. Read the traceback with:
+1. If the grep output is empty, the run crashed. Read the traceback with:
 
 ```bash
 tail -n 80 run.log
@@ -202,22 +212,22 @@ tail -n 80 run.log
 
 Try to diagnose whether it was:
 
-* a simple implementation bug,
-* an OOM / resource issue,
-* or a fundamentally bad idea.
+- a simple implementation bug,
+- an OOM / resource issue,
+- or a fundamentally bad idea.
 
-7. Record the results in `results.tsv` (NOTE: do not commit the `results.tsv` file).
-8. If the primary metric improved, you “advance” the branch, keeping the git commit.
-9. If the primary metric is equal or worse, you git reset back to where you started.
+1. Record the results in `results.tsv` (NOTE: do not commit the `results.tsv` file).
+2. If the primary metric improved and the run did not materially degrade either component metric, you “advance” the branch, keeping the git commit.
+3. If the primary metric is equal or worse, or it improved only by materially degrading `val_halo16_pair_f1` or `val_proxy_macro_f1`, you git reset back to where you started.
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep them. If they do not, discard them. You are advancing the branch so that good ideas compound over time. If you feel stuck, you may occasionally rewind or revisit older directions, but do this very very sparingly.
 
-**Timeout**: each experiment should complete within the repo’s intended budget plus startup/eval overhead. In this repo the steady-state training budget is 10 minutes, so a run taking meaningfully beyond that (for example over 15 minutes total wall time) should be killed and treated as a failure.
+**Timeout**: each experiment should complete within the repo’s intended budget plus startup/eval overhead. In this repo the steady-state training budget is 5 minutes, so a run taking meaningfully beyond that (for example over 10 minutes total wall time) should be killed and treated as a failure.
 
 **Crashes**: if a run crashes (OOM, bug, bad tensor shape, etc.), use your judgment:
 
-* if it is something dumb and easy to fix (typo, import, shape bug, obvious config issue), fix it and rerun;
-* if the idea itself is fundamentally broken, log `crash` in the TSV, revert, and move on.
+- if it is something dumb and easy to fix (typo, import, shape bug, obvious config issue), fix it and rerun;
+- if the idea itself is fundamentally broken, log `crash` in the TSV, revert, and move on.
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
 
