@@ -259,6 +259,24 @@ class Phase1Result:
     skipped: bool = False
 
 
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation channel attention."""
+    def __init__(self, channels: int, reduction: int = 4):
+        super().__init__()
+        mid = max(8, channels // reduction)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, mid),
+            nn.ReLU(inplace=True),
+            nn.Linear(mid, channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, C, T]
+        attn = self.fc(x.mean(dim=2)).unsqueeze(2)
+        return x * attn
+
+
 class Stage0BoundaryModel(nn.Module):
     def __init__(self, *, input_dim: int, cfg: Stage0Config) -> None:
         super().__init__()
@@ -277,6 +295,7 @@ class Stage0BoundaryModel(nn.Module):
                 base_heads=3,
             )
         )
+        self.se = SEBlock(int(cfg.hidden_dim))
         self.state_head = nn.Conv1d(int(cfg.hidden_dim), 4, kernel_size=1)
 
     def _forward_main_from_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
@@ -293,6 +312,7 @@ class Stage0BoundaryModel(nn.Module):
         hidden = batch.transpose(1, 2)
         hidden = self.tcn.in_proj(hidden)
         hidden = self.tcn.blocks(hidden)
+        hidden = self.se(hidden)
         logits3 = self._forward_main_from_hidden(hidden).transpose(1, 2)
         logits4 = self.state_head(hidden).transpose(1, 2)
         features = hidden.transpose(1, 2)
