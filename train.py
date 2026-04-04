@@ -170,7 +170,7 @@ class Stage0Config:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     warmup_ratio: float = 0.05
-    final_lr_frac: float = 0.2
+    final_lr_frac: float = 0.05
     hidden_dim: int = 256
     kernel_size: int = 5
     dropout: float = 0.1
