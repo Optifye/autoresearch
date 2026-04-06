@@ -995,7 +995,7 @@ def _compute_stage0_loss(
         + end_loss
         + (float(cfg.cycle_loss_weight) * cycle_loss)
         + (float(cfg.transition_consistency_weight) * transition_loss)
-        + 0.3 * dice
+        + 0.2 * dice
     )
     stats = {
         "loss_total": float(total.detach().item()),
