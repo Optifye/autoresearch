@@ -855,6 +855,17 @@ def _collate_train_batch(
         mask_start_end[row, start:stop] = torch.from_numpy(segment.mask_start_end[lo : hi + 1])
         valid_mask[row, start:stop] = 1.0
 
+    for _tn in ("y_start", "y_end", "y_cycle"):
+        _t = locals()[_tn]
+        _noise = torch.from_numpy(rng.uniform(0, 0.02, _t.shape).astype(np.float32))
+        _neg = (_t < 0.01).float()
+        if _tn == "y_start":
+            y_start = y_start + _noise * _neg
+        elif _tn == "y_end":
+            y_end = y_end + _noise * _neg
+        else:
+            y_cycle = y_cycle + _noise * _neg
+
     targets = {
         "y_state": y_state,
         "state_weight": state_weight,
@@ -970,11 +981,21 @@ def _compute_stage0_loss(
     cycle_loss = masked_mean(cycle_loss_raw, valid_mask)
     transition_loss = _compute_transition_consistency_loss(logits, targets)
 
+    sp = torch.sigmoid(start_logits) * mask_start_end
+    ep = torch.sigmoid(end_logits) * mask_start_end
+    ys = targets["y_start"].to(logits.device) * mask_start_end
+    ye = targets["y_end"].to(logits.device) * mask_start_end
+    dice = 1.0 - 0.5 * (
+        (2.0 * (sp * ys).sum() + 1.0) / (sp.sum() + ys.sum() + 1.0)
+        + (2.0 * (ep * ye).sum() + 1.0) / (ep.sum() + ye.sum() + 1.0)
+    )
+
     total = (
         start_loss
         + end_loss
         + (float(cfg.cycle_loss_weight) * cycle_loss)
         + (float(cfg.transition_consistency_weight) * transition_loss)
+        + 0.3 * dice
     )
     stats = {
         "loss_total": float(total.detach().item()),
