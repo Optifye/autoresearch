@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -242,6 +243,40 @@ def test_build_prod_phase1_args_uses_prod_defaults(tmp_path) -> None:
     assert args[args.index("--halo") + 1] == str(int(train.PROD_HALO))
 
 
+def test_prime_vjepa_runtime_env_sets_expected_paths(tmp_path, monkeypatch) -> None:
+    record = _fake_record(tmp_path)
+    encoder_checkpoint = tmp_path / "vitl.pt"
+    encoder_checkpoint.write_bytes(b"encoder")
+    cache_spec = train.CacheSpec(
+        cache_root=tmp_path / "cache",
+        manifest={"split_policy": train.DEFAULT_SPLIT_POLICY, "val_ratio": train.VAL_RATIO},
+        train_records=(record,),
+        val_eval_records=(record,),
+        pooler_path=Path(record.pooler_checkpoint),
+        encoder_model="large",
+        encoder_checkpoint=encoder_checkpoint,
+        train_segments_path=tmp_path / "cache" / "index" / "train_segments.jsonl",
+        val_eval_segments_path=tmp_path / "cache" / "index" / "val_eval_segments.jsonl",
+    )
+
+    for key in (
+        "VJEPA_ENCODER_MODEL",
+        "VJEPA_ENCODER_CHECKPOINT",
+        "DENSE_TEMPORAL_ENCODER_MODEL",
+        "DENSE_TEMPORAL_ENCODER_CHECKPOINT",
+        "DENSE_TEMPORAL_POOLER_PATH",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    train._prime_vjepa_runtime_env(cache_spec)
+
+    assert Path(str(os.environ["VJEPA_ENCODER_CHECKPOINT"])).resolve() == encoder_checkpoint.resolve()
+    assert os.environ["VJEPA_ENCODER_MODEL"] == "vit_large"
+    assert os.environ["DENSE_TEMPORAL_ENCODER_MODEL"] == "large"
+    assert Path(str(os.environ["DENSE_TEMPORAL_ENCODER_CHECKPOINT"])).resolve() == encoder_checkpoint.resolve()
+    assert Path(str(os.environ["DENSE_TEMPORAL_POOLER_PATH"])).resolve() == Path(record.pooler_checkpoint).resolve()
+
+
 def test_extract_best_metrics_reads_prod_summary() -> None:
     metrics = train._extract_best_metrics(_prod_summary_payload())
     assert metrics["best_epoch"] == 4
@@ -251,6 +286,40 @@ def test_extract_best_metrics_reads_prod_summary() -> None:
     assert metrics["val_chunk32_pair_f1"] == 0.933
     assert metrics["val_proxy_macro_f1"] == 0.901
     assert metrics["val_proxy_false"] == 17
+
+
+def test_prepare_stage0_wrapper_rewrites_inference_encoder_path(tmp_path) -> None:
+    record = _fake_record(tmp_path)
+    encoder_checkpoint = tmp_path / "vitl.pt"
+    encoder_checkpoint.write_bytes(b"encoder")
+    cache_spec = train.CacheSpec(
+        cache_root=tmp_path / "cache",
+        manifest={"split_policy": train.DEFAULT_SPLIT_POLICY, "val_ratio": train.VAL_RATIO},
+        train_records=(record,),
+        val_eval_records=(record,),
+        pooler_path=Path(record.pooler_checkpoint),
+        encoder_model="large",
+        encoder_checkpoint=encoder_checkpoint,
+        train_segments_path=tmp_path / "cache" / "index" / "train_segments.jsonl",
+        val_eval_segments_path=tmp_path / "cache" / "index" / "val_eval_segments.jsonl",
+    )
+    fixed_stage0_checkpoint = tmp_path / "fixed_stage0" / "boundary_model.pt"
+    fixed_stage0_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    payload = _prod_checkpoint_payload()
+    payload["inference"] = {
+        "encoder_model": "large",
+        "encoder_checkpoint": "/workspace/encoder_models/vitl.pt",
+    }
+    torch.save(payload, fixed_stage0_checkpoint)
+
+    wrapper_root, _metadata_path = train._prepare_stage0_wrapper(
+        output_root=tmp_path / "runs" / "wrapper_test",
+        cache_spec=cache_spec,
+        fixed_stage0_checkpoint=fixed_stage0_checkpoint,
+    )
+    wrapped_payload = torch.load(wrapper_root / "baseline" / "boundary_model.pt", map_location="cpu")
+    assert wrapped_payload["inference"]["encoder_model"] == "large"
+    assert Path(wrapped_payload["inference"]["encoder_checkpoint"]).resolve() == encoder_checkpoint.resolve()
 
 
 def test_main_writes_run_summary_from_prod_summary(tmp_path, monkeypatch) -> None:

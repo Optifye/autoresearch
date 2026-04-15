@@ -351,7 +351,14 @@ def _prepare_stage0_wrapper(
         shutil.rmtree(wrapper_root)
     baseline_dir.mkdir(parents=True, exist_ok=True)
     wrapped_checkpoint = baseline_dir / "boundary_model.pt"
-    shutil.copy2(fixed_stage0_checkpoint, wrapped_checkpoint)
+    checkpoint_payload = torch.load(fixed_stage0_checkpoint, map_location="cpu")
+    if not isinstance(checkpoint_payload, dict):
+        raise RuntimeError(f"Invalid fixed stage-0 checkpoint payload: {fixed_stage0_checkpoint}")
+    inference_payload = dict(checkpoint_payload.get("inference") or {})
+    inference_payload["encoder_model"] = str(cache_spec.encoder_model)
+    inference_payload["encoder_checkpoint"] = str(cache_spec.encoder_checkpoint)
+    checkpoint_payload["inference"] = inference_payload
+    torch.save(checkpoint_payload, wrapped_checkpoint)
 
     summary_payload = {
         "space_name": SPACE_NAME,
@@ -471,6 +478,15 @@ def _run_prod_phase1_epoch_eval(*, args: Sequence[str]) -> int:
     return int(result or 0)
 
 
+def _prime_vjepa_runtime_env(cache_spec: CacheSpec) -> None:
+    encoder_variant = "vit_large" if str(cache_spec.encoder_model).strip().lower() == "large" else "vit_giant"
+    os.environ.setdefault("VJEPA_ENCODER_MODEL", encoder_variant)
+    os.environ.setdefault("VJEPA_ENCODER_CHECKPOINT", str(cache_spec.encoder_checkpoint))
+    os.environ.setdefault("DENSE_TEMPORAL_ENCODER_MODEL", str(cache_spec.encoder_model))
+    os.environ.setdefault("DENSE_TEMPORAL_ENCODER_CHECKPOINT", str(cache_spec.encoder_checkpoint))
+    os.environ.setdefault("DENSE_TEMPORAL_POOLER_PATH", str(cache_spec.pooler_path))
+
+
 def _extract_best_metrics(prod_summary: Mapping[str, Any]) -> Dict[str, Any]:
     best = prod_summary["best_by_halo16"]
     best_metrics = best["metrics"]
@@ -537,6 +553,7 @@ def main() -> int:
 
     cache_root = _resolve_cache_root()
     cache_spec = _load_cache_spec(cache_root)
+    _prime_vjepa_runtime_env(cache_spec)
 
     fixed_stage0_checkpoint = _resolve_fixed_stage0_checkpoint(cache_root)
     if not fixed_stage0_checkpoint.exists():
