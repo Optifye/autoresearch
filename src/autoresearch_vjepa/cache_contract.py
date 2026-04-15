@@ -48,11 +48,11 @@ from .dotenv import load_dotenv
 
 LOGGER = logging.getLogger(__name__)
 
-TIME_BUDGET = 600
-TOTAL_TIMEOUT_SECONDS = 900
+TIME_BUDGET = 300
+TOTAL_TIMEOUT_SECONDS = 600
 PAIR_TOLERANCE_MS = 1000
 VAL_RATIO = 0.4
-CACHE_VERSION = "onemed_dense_v1"
+CACHE_VERSION = "mangalam_dense_v1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SPLIT_POLICY = "camera_stratified_hash"
 
@@ -79,7 +79,7 @@ def _resolve_cache_dir() -> Path:
     override = os.getenv("AUTORESEARCH_CACHE_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve() / CACHE_VERSION
-    return Path("/tmp/autoresearch-minda-subassembly-cache") / CACHE_VERSION
+    return Path("/tmp/autoresearch-mangalam-packing-cache") / CACHE_VERSION
 
 
 def configure_cache_paths(cache_root: Path) -> None:
