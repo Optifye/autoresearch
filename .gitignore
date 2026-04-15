@@ -21,6 +21,7 @@ AGENTS.md
 
 # Experimental code/artifacts
 dev/
+headless_runs/
 
 # Results file
 results.tsv
