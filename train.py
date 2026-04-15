@@ -184,7 +184,7 @@ class Stage0Config:
     transition_consistency_weight: float = 0.30
     neg_margin: float = 0.2
     ignore_radius: int = 1
-    smooth_sigma: float = 0.7
+    smooth_sigma: float = 0.65
     ema_enabled: bool = True
     ema_decay: float = 0.9998
     ema_start_ratio: float = 0.15

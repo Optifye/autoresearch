@@ -1,147 +1,119 @@
-Uninstalled 1 package in 3ms
-Installed 1 package in 13ms
-2026-03-25 09:29:38,860 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=100000 starts after first boundary idx=249 for stream '0d7b50e3-1392-4906-ace9-6e10bc55b7f3__seg001'; early cycles will be dropped
-2026-03-25 09:29:38,860 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=100000 aligns with first cycle for stream '0d7b50e3-1392-4906-ace9-6e10bc55b7f3__seg001' but searchsorted trimmed start idx (250 -> 249); preserving cycle coverage
-2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99240 starts after first boundary idx=247 for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000'; early cycles will be dropped
-2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99240 aligns with first cycle for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000' but searchsorted trimmed start idx (248 -> 247); preserving cycle coverage
-2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_end_ms=214600 ends before last boundary idx=536 for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000'; late cycles will be truncated
-2026-03-25 09:29:38,872 WARNING training.dense_temporal.tcn_train: labels.supervised_end_ms=214600 aligns with last cycle for stream '26b8f084-0ea7-40a0-9182-c760ebed2e47__seg000' but searchsorted trimmed end idx (535 -> 536); preserving cycle coverage
-2026-03-25 09:29:38,879 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=572040 starts after first boundary idx=1429 for stream '2d3012cc-cc54-4df0-bbe5-8c3c19019715__seg000'; early cycles will be dropped
-2026-03-25 09:29:38,879 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=572040 aligns with first cycle for stream '2d3012cc-cc54-4df0-bbe5-8c3c19019715__seg000' but searchsorted trimmed start idx (1430 -> 1429); preserving cycle coverage
-2026-03-25 09:29:38,883 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=136400 starts after first boundary idx=340 for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg001'; early cycles will be dropped
-2026-03-25 09:29:38,883 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=136400 aligns with first cycle for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg001' but searchsorted trimmed start idx (341 -> 340); preserving cycle coverage
-2026-03-25 09:29:38,887 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=251200 starts after first boundary idx=627 for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg002'; early cycles will be dropped
-2026-03-25 09:29:38,887 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=251200 aligns with first cycle for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg002' but searchsorted trimmed start idx (628 -> 627); preserving cycle coverage
-2026-03-25 09:29:38,894 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=434400 starts after first boundary idx=1085 for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg004'; early cycles will be dropped
-2026-03-25 09:29:38,894 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=434400 aligns with first cycle for stream '373b44a2-5a24-4400-a472-693d6a5d96ec__seg004' but searchsorted trimmed start idx (1086 -> 1085); preserving cycle coverage
-2026-03-25 09:29:38,934 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=506760 starts after first boundary idx=1266 for stream 'f6d86963-13ab-4160-a2ab-ea92576889bc__seg004'; early cycles will be dropped
-2026-03-25 09:29:38,934 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=506760 aligns with first cycle for stream 'f6d86963-13ab-4160-a2ab-ea92576889bc__seg004' but searchsorted trimmed start idx (1267 -> 1266); preserving cycle coverage
-2026-03-25 09:29:40,718 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=342760 starts after first boundary idx=856 for stream '13bef905-94de-4488-93ee-1a03ea3dbf85__seg001'; early cycles will be dropped
-2026-03-25 09:29:40,718 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=342760 aligns with first cycle for stream '13bef905-94de-4488-93ee-1a03ea3dbf85__seg001' but searchsorted trimmed start idx (857 -> 856); preserving cycle coverage
-2026-03-25 09:29:40,753 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=153960 starts after first boundary idx=384 for stream '55ab6dfe-f83a-4370-b0c2-45b6398f8362__seg001'; early cycles will be dropped
-2026-03-25 09:29:40,753 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=153960 aligns with first cycle for stream '55ab6dfe-f83a-4370-b0c2-45b6398f8362__seg001' but searchsorted trimmed start idx (385 -> 384); preserving cycle coverage
-2026-03-25 09:29:40,766 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=465920 starts after first boundary idx=1164 for stream '75db36fc-daf2-452f-9890-d8f74c40588a__seg000'; early cycles will be dropped
-2026-03-25 09:29:40,766 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=465920 aligns with first cycle for stream '75db36fc-daf2-452f-9890-d8f74c40588a__seg000' but searchsorted trimmed start idx (1165 -> 1164); preserving cycle coverage
-2026-03-25 09:29:40,783 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99200 starts after first boundary idx=247 for stream '9750838e-acac-402c-98fe-4a2e77fba4af__seg001'; early cycles will be dropped
-2026-03-25 09:29:40,783 WARNING training.dense_temporal.tcn_train: labels.supervised_start_ms=99200 aligns with first cycle for stream '9750838e-acac-402c-98fe-4a2e77fba4af__seg001' but searchsorted trimmed start idx (248 -> 247); preserving cycle coverage
-2026-03-25 09:29:52,001 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=1 loss=4.4662 pair_heads=['start', 'end', 'cycle'] macro_f1=0.3885 trainable_params_M=3.192
-2026-03-25 09:30:00,733 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=1 loss=6.4826 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5506 trainable_params_M=1.614
-2026-03-25 09:30:02,683 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=2 loss=4.3337 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5434 trainable_params_M=3.192
-2026-03-25 09:30:04,281 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=2 loss=5.9962 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6221 trainable_params_M=1.614
-2026-03-25 09:30:06,066 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=3 loss=3.4390 pair_heads=['start', 'end', 'cycle'] macro_f1=0.2674 trainable_params_M=3.192
-2026-03-25 09:30:07,656 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=3 loss=5.1720 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5824 trainable_params_M=1.614
-2026-03-25 09:30:09,530 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=4 loss=2.7533 pair_heads=['start', 'end', 'cycle'] macro_f1=0.4891 trainable_params_M=3.192
-2026-03-25 09:30:11,121 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=4 loss=3.4313 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7871 trainable_params_M=1.614
-2026-03-25 09:30:12,992 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=5 loss=2.3139 pair_heads=['start', 'end', 'cycle'] macro_f1=0.5233 trainable_params_M=3.192
-2026-03-25 09:30:14,619 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=5 loss=2.9147 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7612 trainable_params_M=1.614
-2026-03-25 09:30:16,488 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=6 loss=1.9770 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6139 trainable_params_M=3.192
-2026-03-25 09:30:18,131 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=6 loss=2.2534 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8027 trainable_params_M=1.614
-2026-03-25 09:30:19,898 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=7 loss=1.6105 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6297 trainable_params_M=3.192
-2026-03-25 09:30:21,522 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=7 loss=2.0553 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8440 trainable_params_M=1.614
-2026-03-25 09:30:23,365 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=8 loss=1.3597 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6930 trainable_params_M=3.192
-2026-03-25 09:30:24,946 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=8 loss=1.7527 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8545 trainable_params_M=1.614
-2026-03-25 09:30:26,793 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=9 loss=1.1101 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6698 trainable_params_M=3.192
-2026-03-25 09:30:28,197 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=9 loss=1.4312 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8462 trainable_params_M=1.614
-2026-03-25 09:30:29,978 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=10 loss=0.9788 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6606 trainable_params_M=3.192
-2026-03-25 09:30:31,570 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=10 loss=1.2875 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8762 trainable_params_M=1.614
-2026-03-25 09:30:42,423 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=11 loss=0.8386 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6912 trainable_params_M=3.192
-2026-03-25 09:30:43,644 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=11 loss=1.1114 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8676 trainable_params_M=1.614
-2026-03-25 09:30:45,126 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=12 loss=0.7729 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6957 trainable_params_M=3.192
-2026-03-25 09:30:46,423 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=12 loss=1.0207 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8851 trainable_params_M=1.614
-2026-03-25 09:30:47,989 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=13 loss=0.7019 pair_heads=['start', 'end', 'cycle'] macro_f1=0.6865 trainable_params_M=3.192
-2026-03-25 09:30:49,196 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=13 loss=0.9752 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8764 trainable_params_M=1.614
-2026-03-25 09:30:50,797 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=14 loss=0.6366 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7020 trainable_params_M=3.192
-2026-03-25 09:30:51,984 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=14 loss=0.8617 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9032 trainable_params_M=1.614
-2026-03-25 09:30:53,594 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=15 loss=0.6053 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7223 trainable_params_M=3.192
-2026-03-25 09:30:54,772 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=15 loss=0.7601 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9056 trainable_params_M=1.614
-2026-03-25 09:30:56,239 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=16 loss=0.5821 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7214 trainable_params_M=3.192
-2026-03-25 09:30:57,828 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=16 loss=0.7117 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9088 trainable_params_M=1.614
-2026-03-25 09:30:59,724 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=17 loss=0.5490 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7444 trainable_params_M=3.192
-2026-03-25 09:31:01,280 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=17 loss=0.6356 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9165 trainable_params_M=1.614
-2026-03-25 09:31:03,256 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=18 loss=0.5070 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7481 trainable_params_M=3.192
-2026-03-25 09:31:04,930 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=18 loss=0.5848 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9155 trainable_params_M=1.614
-2026-03-25 09:31:06,749 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=19 loss=0.4791 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7673 trainable_params_M=3.192
-2026-03-25 09:31:08,286 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=19 loss=0.5319 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9317 trainable_params_M=1.614
-2026-03-25 09:31:10,083 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=20 loss=0.4606 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8049 trainable_params_M=3.192
-2026-03-25 09:31:11,639 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=20 loss=0.5040 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9341 trainable_params_M=1.614
-2026-03-25 09:31:14,869 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=21 loss=0.4369 pair_heads=['start', 'end', 'cycle'] macro_f1=0.7966 trainable_params_M=3.192
-2026-03-25 09:31:16,405 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=21 loss=0.4701 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9398 trainable_params_M=1.614
-2026-03-25 09:31:18,250 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=22 loss=0.4207 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8187 trainable_params_M=3.192
-2026-03-25 09:31:19,817 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=22 loss=0.4046 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9374 trainable_params_M=1.614
-2026-03-25 09:31:21,673 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=23 loss=0.3998 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8358 trainable_params_M=3.192
-2026-03-25 09:31:23,395 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=23 loss=0.3747 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9503 trainable_params_M=1.614
-2026-03-25 09:31:25,359 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=24 loss=0.3895 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8385 trainable_params_M=3.192
-2026-03-25 09:31:27,042 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=24 loss=0.3478 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9545 trainable_params_M=1.614
-2026-03-25 09:31:28,971 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=25 loss=0.3753 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8413 trainable_params_M=3.192
-2026-03-25 09:31:30,639 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=25 loss=0.3323 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9593 trainable_params_M=1.614
-2026-03-25 09:31:32,552 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=26 loss=0.3620 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8614 trainable_params_M=3.192
-2026-03-25 09:31:33,368 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=26 loss=0.3026 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9594 trainable_params_M=1.614
-2026-03-25 09:31:35,178 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=27 loss=0.3370 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8456 trainable_params_M=3.192
-2026-03-25 09:31:36,670 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=27 loss=0.2774 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9665 trainable_params_M=1.614
-2026-03-25 09:31:38,517 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=28 loss=0.3074 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8831 trainable_params_M=3.192
-2026-03-25 09:31:39,718 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=28 loss=0.2576 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9665 trainable_params_M=1.614
-2026-03-25 09:31:41,200 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=29 loss=0.2983 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8537 trainable_params_M=3.192
-2026-03-25 09:31:42,329 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=29 loss=0.2446 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9708 trainable_params_M=1.614
-2026-03-25 09:31:43,829 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=30 loss=0.2919 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8775 trainable_params_M=3.192
-2026-03-25 09:31:45,166 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=30 loss=0.2189 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9688 trainable_params_M=1.614
-2026-03-25 09:31:47,644 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=31 loss=0.2768 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8826 trainable_params_M=3.192
-2026-03-25 09:31:48,869 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=31 loss=0.2076 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9754 trainable_params_M=1.614
-2026-03-25 09:31:50,433 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=32 loss=0.2660 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8760 trainable_params_M=3.192
-2026-03-25 09:31:52,117 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=32 loss=0.1968 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9784 trainable_params_M=1.614
-2026-03-25 09:31:54,101 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=33 loss=0.2516 pair_heads=['start', 'end', 'cycle'] macro_f1=0.8908 trainable_params_M=3.192
-2026-03-25 09:31:55,691 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=33 loss=0.1809 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9798 trainable_params_M=1.614
-2026-03-25 09:31:57,840 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=34 loss=0.2501 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9138 trainable_params_M=3.192
-2026-03-25 09:31:59,528 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=34 loss=0.1667 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9826 trainable_params_M=1.614
-2026-03-25 09:32:01,548 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=35 loss=0.2433 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9121 trainable_params_M=3.192
-2026-03-25 09:32:03,166 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=35 loss=0.1542 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9838 trainable_params_M=1.614
-2026-03-25 09:32:05,122 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=36 loss=0.2349 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9069 trainable_params_M=3.192
-2026-03-25 09:32:06,701 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=36 loss=0.1474 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9867 trainable_params_M=1.614
-2026-03-25 09:32:08,315 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=37 loss=0.2249 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9177 trainable_params_M=3.192
-2026-03-25 09:32:09,497 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=37 loss=0.1467 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9874 trainable_params_M=1.614
-2026-03-25 09:32:11,158 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=38 loss=0.2240 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9315 trainable_params_M=3.192
-2026-03-25 09:32:12,454 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=38 loss=0.1278 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9897 trainable_params_M=1.614
-2026-03-25 09:32:13,563 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=39 loss=0.2166 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9181 trainable_params_M=3.192
-2026-03-25 09:32:14,805 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=39 loss=0.1113 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9902 trainable_params_M=1.614
-2026-03-25 09:32:16,304 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=40 loss=0.2114 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9336 trainable_params_M=3.192
-2026-03-25 09:32:17,489 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=40 loss=0.1079 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9901 trainable_params_M=1.614
-2026-03-25 09:32:19,695 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=41 loss=0.2101 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9471 trainable_params_M=3.192
-2026-03-25 09:32:21,033 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=41 loss=0.0988 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9922 trainable_params_M=1.614
-2026-03-25 09:32:22,743 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=42 loss=0.2028 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9497 trainable_params_M=3.192
-2026-03-25 09:32:23,990 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=42 loss=0.0920 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9933 trainable_params_M=1.614
-2026-03-25 09:32:25,643 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=43 loss=0.2008 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9305 trainable_params_M=3.192
-2026-03-25 09:32:26,873 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=43 loss=0.0854 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9957 trainable_params_M=1.614
-2026-03-25 09:32:28,519 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=44 loss=0.1897 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9331 trainable_params_M=3.192
-2026-03-25 09:32:29,816 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=44 loss=0.0847 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9957 trainable_params_M=1.614
-2026-03-25 09:32:31,372 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=45 loss=0.1906 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9592 trainable_params_M=3.192
-2026-03-25 09:32:32,628 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=45 loss=0.0799 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9955 trainable_params_M=1.614
-2026-03-25 09:32:34,243 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=46 loss=0.1876 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9604 trainable_params_M=3.192
-2026-03-25 09:32:35,554 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=46 loss=0.0792 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9947 trainable_params_M=1.614
-2026-03-25 09:32:37,715 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=47 loss=0.1842 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9557 trainable_params_M=3.192
-2026-03-25 09:32:39,463 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=47 loss=0.0727 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9971 trainable_params_M=1.614
-2026-03-25 09:32:41,460 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=48 loss=0.1810 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9477 trainable_params_M=3.192
-2026-03-25 09:32:43,063 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=48 loss=0.0686 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9974 trainable_params_M=1.614
-2026-03-25 09:32:45,144 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=49 loss=0.1769 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9653 trainable_params_M=3.192
-2026-03-25 09:32:46,834 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=49 loss=0.0654 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9974 trainable_params_M=1.614
-2026-03-25 09:32:48,924 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=50 loss=0.1760 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9632 trainable_params_M=3.192
-2026-03-25 09:32:50,653 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=50 loss=0.0616 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9982 trainable_params_M=1.614
-2026-03-25 09:32:53,906 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=51 loss=0.1706 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9552 trainable_params_M=3.192
-2026-03-25 09:32:55,583 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=51 loss=0.0584 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9982 trainable_params_M=1.614
-2026-03-25 09:32:57,587 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=52 loss=0.1684 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9560 trainable_params_M=3.192
-2026-03-25 09:32:59,226 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=52 loss=0.0566 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9984 trainable_params_M=1.614
-2026-03-25 09:33:01,163 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=53 loss=0.1651 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9753 trainable_params_M=3.192
-2026-03-25 09:33:02,796 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=53 loss=0.0522 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9984 trainable_params_M=1.614
-2026-03-25 09:33:04,860 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=54 loss=0.1627 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9753 trainable_params_M=3.192
-2026-03-25 09:33:06,509 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=54 loss=0.0510 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9992 trainable_params_M=1.614
-2026-03-25 09:33:08,601 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=55 loss=0.1600 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9640 trainable_params_M=3.192
-2026-03-25 09:33:10,220 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=55 loss=0.0509 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9987 trainable_params_M=1.614
-2026-03-25 09:33:12,305 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=56 loss=0.1590 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9661 trainable_params_M=3.192
-2026-03-25 09:33:13,879 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=56 loss=0.0455 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9990 trainable_params_M=1.614
-2026-03-25 09:33:15,721 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=57 loss=0.1572 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9804 trainable_params_M=3.192
-2026-03-25 09:33:16,959 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=57 loss=0.0439 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9995 trainable_params_M=1.614
-2026-03-25 09:33:18,463 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=58 loss=0.1534 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9847 trainable_params_M=3.192
-2026-03-25 09:33:19,754 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=58 loss=0.0415 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9997 trainable_params_M=1.614
-2026-03-25 09:33:21,264 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=59 loss=0.1516 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9804 trainable_params_M=3.192
-2026-03-25 09:33:22,439 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=59 loss=0.0410 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9997 trainable_params_M=1.614
-2026-03-25 09:33:24,107 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=60 loss=0.1500 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9868 trainable_params_M=3.192
-2026-03-25 09:33:25,497 INFO autoresearch.minda.train: TCN space=minda-subassembly-tcn epoch=60 loss=0.0417 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9995 trainable_params_M=1.614
-2026-03-25 09:33:27,964 INFO autoresearch.minda.train: TCN space=minda-button-tcn epoch=61 loss=0.1506 pair_heads=['start', 'end', 'cycle'] macro_f1=0.9805 trainable_params_M=3.192
+Uninstalled 1 package in 2ms
+Installed 1 package in 11ms
+2026-04-06 15:08:44,064 INFO autoresearch.subassembly.train: Stage-0 hybrid: train_segments=46 val_segments=28 epochs=200 steps_per_epoch=2 total_steps=400 budget=300.0s halo=16 center_chunk_len=256 state_aux_weight=0.1000 class_weights=[0.4242, 1.6157, 1.6157, 0.3444]
+2026-04-06 15:09:08,996 INFO autoresearch.subassembly.train: stage0 val epoch=004 source=current score=0.291233 halo16=0.182456 proxy=0.400009 false=2684 fullseq=0.214047 best
+2026-04-06 15:09:12,543 INFO autoresearch.subassembly.train: stage0 step=0020/0400 epoch=009 loss=0.6663 boundary=0.6210 state=0.4534 start=0.1169 end=0.2221 cycle=0.1851 transition=0.1030 lr=0.000952381
+2026-04-06 15:09:14,099 INFO autoresearch.subassembly.train: stage0 val epoch=009 source=current score=0.446219 halo16=0.366102 proxy=0.526336 false=3441 fullseq=0.341794 best
+2026-04-06 15:09:18,657 INFO autoresearch.subassembly.train: stage0 val epoch=014 source=current score=0.736700 halo16=0.713043 proxy=0.760356 false=653 fullseq=0.688453 best
+2026-04-06 15:09:23,008 INFO autoresearch.subassembly.train: stage0 step=0040/0400 epoch=019 loss=0.2003 boundary=0.1818 state=0.1843 start=0.0267 end=0.0228 cycle=0.0730 transition=0.0276 lr=0.000952256
+2026-04-06 15:09:24,066 INFO autoresearch.subassembly.train: stage0 val epoch=019 source=current score=0.791545 halo16=0.781513 proxy=0.801577 false=546 fullseq=0.778243 best
+2026-04-06 15:09:28,492 INFO autoresearch.subassembly.train: stage0 val epoch=024 source=current score=0.846726 halo16=0.855932 proxy=0.837519 false=357 fullseq=0.846154 best
+2026-04-06 15:09:32,248 INFO autoresearch.subassembly.train: stage0 step=0060/0400 epoch=029 loss=0.1057 boundary=0.0964 state=0.0930 start=0.0114 end=0.0102 cycle=0.0317 transition=0.0190 lr=0.00090213
+2026-04-06 15:09:32,887 INFO autoresearch.subassembly.train: stage0 val epoch=029 source=current score=0.825431 halo16=0.790909 proxy=0.859953 false=213 fullseq=0.800915 keep-prev
+2026-04-06 15:09:34,118 INFO autoresearch.subassembly.train: stage0 val epoch=029 source=ema score=0.825431 halo16=0.790909 proxy=0.859953 false=213 fullseq=0.800915 keep-prev
+2026-04-06 15:09:42,742 INFO autoresearch.subassembly.train: stage0 val epoch=034 source=current score=0.857464 halo16=0.859574 proxy=0.855353 false=293 fullseq=0.838298 best
+2026-04-06 15:09:43,809 INFO autoresearch.subassembly.train: stage0 val epoch=034 source=ema score=0.829905 halo16=0.798186 proxy=0.861625 false=217 fullseq=0.810934 keep-prev
+2026-04-06 15:09:51,504 INFO autoresearch.subassembly.train: stage0 step=0080/0400 epoch=039 loss=0.0900 boundary=0.0840 state=0.0603 start=0.0116 end=0.0107 cycle=0.0236 transition=0.0167 lr=0.000852005
+2026-04-06 15:09:52,138 INFO autoresearch.subassembly.train: stage0 val epoch=039 source=current score=0.860466 halo16=0.857143 proxy=0.863790 false=275 fullseq=0.853448 best
+2026-04-06 15:09:53,223 INFO autoresearch.subassembly.train: stage0 val epoch=039 source=ema score=0.831855 halo16=0.800905 proxy=0.862805 false=218 fullseq=0.810934 keep-prev
+2026-04-06 15:10:01,208 INFO autoresearch.subassembly.train: stage0 val epoch=044 source=current score=0.871495 halo16=0.862302 proxy=0.880688 false=201 fullseq=0.863535 best
+2026-04-06 15:10:01,976 INFO autoresearch.subassembly.train: stage0 val epoch=044 source=ema score=0.831198 halo16=0.800905 proxy=0.861491 false=221 fullseq=0.810934 keep-prev
+2026-04-06 15:10:09,284 INFO autoresearch.subassembly.train: stage0 step=0100/0400 epoch=049 loss=0.0685 boundary=0.0672 state=0.0137 start=0.0098 end=0.0100 cycle=0.0038 transition=0.0150 lr=0.00080188
+2026-04-06 15:10:09,988 INFO autoresearch.subassembly.train: stage0 val epoch=049 source=current score=0.873746 halo16=0.867416 proxy=0.880077 false=212 fullseq=0.868009 best
+2026-04-06 15:10:10,600 INFO autoresearch.subassembly.train: stage0 val epoch=049 source=ema score=0.840392 halo16=0.815315 proxy=0.865469 false=219 fullseq=0.815490 keep-prev
+2026-04-06 15:10:18,882 INFO autoresearch.subassembly.train: stage0 val epoch=054 source=current score=0.870352 halo16=0.867257 proxy=0.873447 false=232 fullseq=0.859649 keep-prev
+2026-04-06 15:10:19,882 INFO autoresearch.subassembly.train: stage0 val epoch=054 source=ema score=0.839590 halo16=0.815315 proxy=0.863865 false=222 fullseq=0.815490 keep-prev
+2026-04-06 15:10:28,122 INFO autoresearch.subassembly.train: stage0 step=0120/0400 epoch=059 loss=0.0746 boundary=0.0727 state=0.0186 start=0.0096 end=0.0127 cycle=0.0058 transition=0.0137 lr=0.000751754
+2026-04-06 15:10:28,840 INFO autoresearch.subassembly.train: stage0 val epoch=059 source=current score=0.870631 halo16=0.863341 proxy=0.877921 false=241 fullseq=0.868996 keep-prev
+2026-04-06 15:10:29,799 INFO autoresearch.subassembly.train: stage0 val epoch=059 source=ema score=0.839867 halo16=0.815315 proxy=0.864419 false=222 fullseq=0.825397 keep-prev
+2026-04-06 15:10:37,712 INFO autoresearch.subassembly.train: stage0 val epoch=064 source=current score=0.858458 halo16=0.844444 proxy=0.872471 false=228 fullseq=0.839286 keep-prev
+2026-04-06 15:10:38,558 INFO autoresearch.subassembly.train: stage0 val epoch=064 source=ema score=0.840112 halo16=0.815315 proxy=0.864909 false=221 fullseq=0.825397 keep-prev
+2026-04-06 15:10:46,348 INFO autoresearch.subassembly.train: stage0 step=0140/0400 epoch=069 loss=0.0674 boundary=0.0669 state=0.0052 start=0.0096 end=0.0095 cycle=0.0015 transition=0.0116 lr=0.000701629
+2026-04-06 15:10:47,118 INFO autoresearch.subassembly.train: stage0 val epoch=069 source=current score=0.857324 halo16=0.843750 proxy=0.870897 false=211 fullseq=0.850780 keep-prev
+2026-04-06 15:10:47,821 INFO autoresearch.subassembly.train: stage0 val epoch=069 source=ema score=0.838742 halo16=0.813483 proxy=0.864001 false=222 fullseq=0.825397 keep-prev
+2026-04-06 15:10:56,088 INFO autoresearch.subassembly.train: stage0 val epoch=074 source=current score=0.861987 halo16=0.855234 proxy=0.868740 false=219 fullseq=0.859688 keep-prev
+2026-04-06 15:10:56,727 INFO autoresearch.subassembly.train: stage0 val epoch=074 source=ema score=0.838742 halo16=0.813483 proxy=0.864001 false=222 fullseq=0.825397 keep-prev
+2026-04-06 15:11:03,974 INFO autoresearch.subassembly.train: stage0 step=0160/0400 epoch=079 loss=0.0656 boundary=0.0653 state=0.0028 start=0.0096 end=0.0104 cycle=0.0010 transition=0.0126 lr=0.000651504
+2026-04-06 15:11:04,345 INFO autoresearch.subassembly.train: stage0 val epoch=079 source=current score=0.863774 halo16=0.854586 proxy=0.872962 false=213 fullseq=0.862921 keep-prev
+2026-04-06 15:11:05,449 INFO autoresearch.subassembly.train: stage0 val epoch=079 source=ema score=0.838742 halo16=0.813483 proxy=0.864001 false=222 fullseq=0.825397 keep-prev
+2026-04-06 15:11:13,755 INFO autoresearch.subassembly.train: stage0 val epoch=084 source=current score=0.870829 halo16=0.865471 proxy=0.876187 false=208 fullseq=0.875000 keep-prev
+2026-04-06 15:11:14,987 INFO autoresearch.subassembly.train: stage0 val epoch=084 source=ema score=0.838677 halo16=0.813483 proxy=0.863871 false=222 fullseq=0.825397 keep-prev
+2026-04-06 15:11:21,808 INFO autoresearch.subassembly.train: stage0 step=0180/0400 epoch=089 loss=0.0703 boundary=0.0701 state=0.0015 start=0.0113 end=0.0118 cycle=0.0005 transition=0.0142 lr=0.000601378
+2026-04-06 15:11:22,628 INFO autoresearch.subassembly.train: stage0 val epoch=089 source=current score=0.869438 halo16=0.862302 proxy=0.876574 false=207 fullseq=0.863535 keep-prev
+2026-04-06 15:11:23,247 INFO autoresearch.subassembly.train: stage0 val epoch=089 source=ema score=0.840786 halo16=0.817978 proxy=0.863595 false=222 fullseq=0.825397 keep-prev
+2026-04-06 15:11:30,668 INFO autoresearch.subassembly.train: stage0 val epoch=094 source=current score=0.870892 halo16=0.862921 proxy=0.878862 false=204 fullseq=0.859688 keep-prev
+2026-04-06 15:11:31,580 INFO autoresearch.subassembly.train: stage0 val epoch=094 source=ema score=0.840996 halo16=0.817978 proxy=0.864015 false=222 fullseq=0.825397 keep-prev
+2026-04-06 15:11:38,378 INFO autoresearch.subassembly.train: stage0 step=0200/0400 epoch=099 loss=0.0624 boundary=0.0622 state=0.0017 start=0.0089 end=0.0090 cycle=0.0005 transition=0.0104 lr=0.000551253
+2026-04-06 15:11:38,743 INFO autoresearch.subassembly.train: stage0 val epoch=099 source=current score=0.871440 halo16=0.865342 proxy=0.877538 false=215 fullseq=0.869757 keep-prev
+2026-04-06 15:11:39,351 INFO autoresearch.subassembly.train: stage0 val epoch=099 source=ema score=0.840996 halo16=0.817978 proxy=0.864015 false=222 fullseq=0.819005 keep-prev
+2026-04-06 15:11:46,412 INFO autoresearch.subassembly.train: stage0 val epoch=104 source=current score=0.879268 halo16=0.881057 proxy=0.877480 false=226 fullseq=0.879121 best
+2026-04-06 15:11:46,958 INFO autoresearch.subassembly.train: stage0 val epoch=104 source=ema score=0.840827 halo16=0.817978 proxy=0.863677 false=223 fullseq=0.819005 keep-prev
+2026-04-06 15:11:54,165 INFO autoresearch.subassembly.train: stage0 step=0220/0400 epoch=109 loss=0.0629 boundary=0.0628 state=0.0009 start=0.0090 end=0.0094 cycle=0.0007 transition=0.0109 lr=0.000501128
+2026-04-06 15:11:54,536 INFO autoresearch.subassembly.train: stage0 val epoch=109 source=current score=0.870442 halo16=0.862832 proxy=0.878052 false=218 fullseq=0.865342 keep-prev
+2026-04-06 15:11:55,217 INFO autoresearch.subassembly.train: stage0 val epoch=109 source=ema score=0.840827 halo16=0.817978 proxy=0.863677 false=223 fullseq=0.819005 keep-prev
+2026-04-06 15:12:02,705 INFO autoresearch.subassembly.train: stage0 val epoch=114 source=current score=0.862341 halo16=0.847534 proxy=0.877148 false=209 fullseq=0.857778 keep-prev
+2026-04-06 15:12:03,328 INFO autoresearch.subassembly.train: stage0 val epoch=114 source=ema score=0.841938 halo16=0.820628 proxy=0.863249 false=223 fullseq=0.819005 keep-prev
+2026-04-06 15:12:10,349 INFO autoresearch.subassembly.train: stage0 step=0240/0400 epoch=119 loss=0.0657 boundary=0.0656 state=0.0006 start=0.0092 end=0.0095 cycle=0.0007 transition=0.0103 lr=0.000451003
+2026-04-06 15:12:10,852 INFO autoresearch.subassembly.train: stage0 val epoch=119 source=current score=0.866025 halo16=0.852608 proxy=0.879442 false=196 fullseq=0.852679 keep-prev
+2026-04-06 15:12:11,494 INFO autoresearch.subassembly.train: stage0 val epoch=119 source=ema score=0.842184 halo16=0.820628 proxy=0.863740 false=222 fullseq=0.819005 keep-prev
+2026-04-06 15:12:18,929 INFO autoresearch.subassembly.train: stage0 val epoch=124 source=current score=0.863134 halo16=0.846154 proxy=0.880115 false=195 fullseq=0.855234 keep-prev
+2026-04-06 15:12:19,738 INFO autoresearch.subassembly.train: stage0 val epoch=124 source=ema score=0.842256 halo16=0.820628 proxy=0.863884 false=222 fullseq=0.819005 keep-prev
+2026-04-06 15:12:26,632 INFO autoresearch.subassembly.train: stage0 step=0260/0400 epoch=129 loss=0.0661 boundary=0.0661 state=0.0007 start=0.0110 end=0.0108 cycle=0.0007 transition=0.0129 lr=0.000400877
+2026-04-06 15:12:26,997 INFO autoresearch.subassembly.train: stage0 val epoch=129 source=current score=0.866492 halo16=0.855204 proxy=0.877781 false=202 fullseq=0.859688 keep-prev
+2026-04-06 15:12:27,918 INFO autoresearch.subassembly.train: stage0 val epoch=129 source=ema score=0.839712 halo16=0.816143 proxy=0.863281 false=223 fullseq=0.814480 keep-prev
+2026-04-06 15:12:35,015 INFO autoresearch.subassembly.train: stage0 val epoch=134 source=current score=0.860993 halo16=0.847380 proxy=0.874606 false=191 fullseq=0.860987 keep-prev
+2026-04-06 15:12:35,735 INFO autoresearch.subassembly.train: stage0 val epoch=134 source=ema score=0.842026 halo16=0.820628 proxy=0.863425 false=223 fullseq=0.819005 keep-prev
+2026-04-06 15:12:42,781 INFO autoresearch.subassembly.train: stage0 step=0280/0400 epoch=139 loss=0.0637 boundary=0.0637 state=0.0003 start=0.0098 end=0.0097 cycle=0.0005 transition=0.0108 lr=0.000350752
+2026-04-06 15:12:43,177 INFO autoresearch.subassembly.train: stage0 val epoch=139 source=current score=0.862745 halo16=0.844749 proxy=0.880740 false=187 fullseq=0.858427 keep-prev
+2026-04-06 15:12:43,853 INFO autoresearch.subassembly.train: stage0 val epoch=139 source=ema score=0.839784 halo16=0.816143 proxy=0.863425 false=223 fullseq=0.814480 keep-prev
+2026-04-06 15:12:51,074 INFO autoresearch.subassembly.train: stage0 val epoch=144 source=current score=0.869610 halo16=0.860360 proxy=0.878860 false=201 fullseq=0.863535 keep-prev
+2026-04-06 15:12:51,716 INFO autoresearch.subassembly.train: stage0 val epoch=144 source=ema score=0.839850 halo16=0.816143 proxy=0.863557 false=223 fullseq=0.814480 keep-prev
+2026-04-06 15:12:58,188 INFO autoresearch.subassembly.train: stage0 step=0300/0400 epoch=149 loss=0.0630 boundary=0.0630 state=0.0003 start=0.0094 end=0.0095 cycle=0.0006 transition=0.0108 lr=0.000300627
+2026-04-06 15:12:58,628 INFO autoresearch.subassembly.train: stage0 val epoch=149 source=current score=0.865747 halo16=0.853933 proxy=0.877561 false=205 fullseq=0.855234 keep-prev
+2026-04-06 15:12:59,485 INFO autoresearch.subassembly.train: stage0 val epoch=149 source=ema score=0.839784 halo16=0.816143 proxy=0.863425 false=223 fullseq=0.814480 keep-prev
+2026-04-06 15:13:06,361 INFO autoresearch.subassembly.train: stage0 val epoch=154 source=current score=0.860876 halo16=0.842825 proxy=0.878927 false=188 fullseq=0.847534 keep-prev
+2026-04-06 15:13:07,066 INFO autoresearch.subassembly.train: stage0 val epoch=154 source=ema score=0.839784 halo16=0.816143 proxy=0.863425 false=223 fullseq=0.814480 keep-prev
+2026-04-06 15:13:13,937 INFO autoresearch.subassembly.train: stage0 step=0320/0400 epoch=159 loss=0.0672 boundary=0.0672 state=0.0004 start=0.0111 end=0.0114 cycle=0.0006 transition=0.0131 lr=0.000250501
+2026-04-06 15:13:14,299 INFO autoresearch.subassembly.train: stage0 val epoch=159 source=current score=0.866573 halo16=0.853881 proxy=0.879264 false=185 fullseq=0.855204 keep-prev
+2026-04-06 15:13:14,923 INFO autoresearch.subassembly.train: stage0 val epoch=159 source=ema score=0.839954 halo16=0.816143 proxy=0.863764 false=222 fullseq=0.817156 keep-prev
+2026-04-06 15:13:22,084 INFO autoresearch.subassembly.train: stage0 val epoch=164 source=current score=0.858776 halo16=0.844749 proxy=0.872803 false=192 fullseq=0.848073 keep-prev
+2026-04-06 15:13:22,705 INFO autoresearch.subassembly.train: stage0 val epoch=164 source=ema score=0.839954 halo16=0.816143 proxy=0.863764 false=222 fullseq=0.817156 keep-prev
+2026-04-06 15:13:29,478 INFO autoresearch.subassembly.train: stage0 step=0340/0400 epoch=169 loss=0.0613 boundary=0.0612 state=0.0011 start=0.0083 end=0.0084 cycle=0.0008 transition=0.0097 lr=0.000200376
+2026-04-06 15:13:29,866 INFO autoresearch.subassembly.train: stage0 val epoch=169 source=current score=0.856872 halo16=0.839002 proxy=0.874741 false=200 fullseq=0.849438 keep-prev
+2026-04-06 15:13:30,424 INFO autoresearch.subassembly.train: stage0 val epoch=169 source=ema score=0.839954 halo16=0.816143 proxy=0.863764 false=222 fullseq=0.817156 keep-prev
+2026-04-06 15:13:37,527 INFO autoresearch.subassembly.train: stage0 val epoch=174 source=current score=0.859953 halo16=0.843537 proxy=0.876369 false=199 fullseq=0.850112 keep-prev
+2026-04-06 15:13:38,111 INFO autoresearch.subassembly.train: stage0 val epoch=174 source=ema score=0.839882 halo16=0.816143 proxy=0.863620 false=222 fullseq=0.817156 keep-prev
+2026-04-06 15:13:44,657 INFO autoresearch.subassembly.train: stage0 step=0360/0400 epoch=179 loss=0.0611 boundary=0.0610 state=0.0008 start=0.0092 end=0.0096 cycle=0.0005 transition=0.0105 lr=0.000150251
+2026-04-06 15:13:45,101 INFO autoresearch.subassembly.train: stage0 val epoch=179 source=current score=0.858606 halo16=0.841629 proxy=0.875583 false=197 fullseq=0.845638 keep-prev
+2026-04-06 15:13:45,956 INFO autoresearch.subassembly.train: stage0 val epoch=179 source=ema score=0.839948 halo16=0.816143 proxy=0.863752 false=222 fullseq=0.817156 keep-prev
+[split] minda-subassembly-tcn | policy=camera_stratified_hash train_videos=23 val_videos=12 target_val_videos=14.0 singleton_cameras=6
+[split] minda-subassembly-tcn camera_val_counts=0cbff4d6-2aea-4434-8160-9b667e282ced:1/3 0fa42810-1341-4b19-882d-7e4d19d437c7:1/2 1db0b10e-527c-444b-a06c-65294f23d725:1/3 392ec2e9-75da-41d3-87df-07434488964a:1/2 47903062-0a34-4ed3-abb7-9d760259ab67:0/1 4a68efd7-bc03-4a29-86e4-ed7bc68ea8b1:0/1 67fafd74-1437-44b8-bc88-e46f959f11d1:0/1 6daf664b-1480-462e-b201-03e602320e6e:1/3 716ca605-396d-4eee-899e-672582839f2b:0/1 75bdbe6d-f2e4-4c07-b67f-71aa53eeb473:1/2 786f89a6-1d11-40ac-858a-f9c687ffb089:1/2 796be63d-9edd-4b42-a068-a9fa142393d9:1/3 7dcc5f73-d601-4ec3-bccb-40cb8fa035ee:2/4 d1543513-5268-4137-9711-d973e3073a9a:0/1 ed01c5c5-954f-4a80-9646-bc175619cf39:0/1 eede7a9c-4c4b-47c6-92a0-04925333b7d5:1/3 f3cae3f0-0b6c-4deb-8db5-eed5e598ef67:1/2
+[task] boundary_pairs_single_space
+[workspace_root] /home/ubuntu/internvideo-attention
+[device] cuda
+[output_root] /tmp/autoresearch_minda_subassembly_replay_runs/minda_subassembly_replay_20260406T150842Z
+[source_run_dir] /tmp/autoresearch-minda-subassembly-cache/onemed_dense_v1/materialized_runs/92c8fdb4-c0f6-4503-b2cc-ab340f79f8f6/dense_temporal
+[cache_root] /tmp/autoresearch-minda-subassembly-cache/onemed_dense_v1
+[stage] tcn | duration=300.0s | trainable_params_M=7.556
+[tcn] best_epoch=104 source=current score=0.879139 halo16=0.881057 proxy=0.877221 false=226 fullseq=0.879121
+[stage] probe_phase1 | duration=0.0s | profile=historical
+[probe] skipped=1 reason=zero_budget passthrough_tcn=/tmp/autoresearch_minda_subassembly_replay_runs/minda_subassembly_replay_20260406T150842Z/stage0_best/boundary_model.pt passthrough_probe=/home/ubuntu/internvideo-attention/encoder_models/vjepa2_attention_poolers/ssv2-vitl-16x2x3.pt
+---
+val_selection_score:0.879139
+val_halo16_pair_f1:0.881057
+val_proxy_macro_f1:0.877221
+val_proxy_false:   226
+val_fullseq_pair_f1:0.879121
+training_seconds:   300.0
+total_seconds:      304.2
+time_budget_seconds:300.0
+tcn_stage_seconds:  300.0
+probe_stage_seconds:0.0
+peak_vram_mb:       33652.9
+cache_version:      onemed_dense_v1
+model_family:       minda_subassembly_hybrid_halo16_stage0_optional_historical_probe
+task_mode:          boundary_pairs_single_space
+pooler_tune_mode:   phase1_skipped_zero_budget
+representation_mode:hybrid_halo16_pooled_z0
+cache_root:         /tmp/autoresearch-minda-subassembly-cache/onemed_dense_v1
+output_root_final:  /tmp/autoresearch_minda_subassembly_replay_runs/minda_subassembly_replay_20260406T150842Z
