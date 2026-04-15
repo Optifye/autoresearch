@@ -72,6 +72,7 @@ Treat the task-specific cache contract as fixed. In this standalone dense-tempor
 - Change phase-1 optimizer, hyperparameters, training loop, batching, and schedules.
 - Change pooler finetuning structure, regularization, losses, and sampling while staying within the fixed evaluation contract.
 - Change how `train.py` wraps or replaces the baseline phase-1 runner, as long as the fixed cache, split, and pregenerated stage-0 checkpoint stay fixed.
+- Add LoRA, Self Supervised Techniques or New temporal models
 - Simplify the code if it preserves or improves results.
 
 **What you CANNOT do:**
@@ -85,7 +86,7 @@ Treat the task-specific cache contract as fixed. In this standalone dense-tempor
 - Change the problem definition just to make the metric look better.
 - Rewrite the repo into a totally different system if the experiment is meant to improve the existing stack rather than replace it.
 
-Do not default to narrow hyperparameter optimization. The branch is at the point where the biggest remaining gains are more likely to come from better phase-1 supervision, better pooler finetuning schedules, better stream sampling, better regularization, or cleaner selection logic that still respects the fixed contract. Use hyperparameter tuning mainly to support, stabilize, or validate one of those larger ideas.
+Do not default to narrow hyperparameter optimization. The branch is at the point where the biggest remaining gains are more likely to come from better phase-1 supervision, better pooler finetuning schedules,  better regularization, or completely new and better techniques. Use hyperparameter tuning mainly to support, stabilize, or validate one of those larger ideas.
 
 **The goal is simple: improve phase-1 validation halo16 quality without trading away the fixed-contract behavior.**
 For this single-space Mangalam packing branch, compare candidates by `val_halo16_pair_f1` on the held-out `60/40` validation split. Tie-break with lower `val_proxy_total_false_count`, then lower `val_count_mae`, then lower timing MAE.
